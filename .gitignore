@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.pytest-tmp/
+pytest-cache-files-*/
+tests/.policy-state.json
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local runtime data and secrets
+config/config.toml
+data/
+logs/
+keys/
+.env
+*.log
+
+# Diagnostics and scratch files
+.tmp/
+.acl-recovery/
+.smoke_test.py

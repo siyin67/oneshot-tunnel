@@ -1,0 +1,97 @@
+# 一次性反向 SSH 隧道管理服务配置示例。
+# 部署时复制为 config/config.toml，修改后通过卷挂载传入容器。
+# 服务启动时会严格校验字段；缺失、类型错误或未知字段都会导致启动失败。
+
+[server]
+# 网站后端监听地址。host network 模式下通常为 0.0.0.0。
+listen_host = "0.0.0.0"
+# 网站服务端口，不得落在 tunnel.port_start..port_end 内。
+port = 8080
+# 页面展示时区。UTC 存储，展示时转换为该时区。
+timezone = "UTC"
+
+[access]
+# 访问密钥列表，登录与管理共用。支持多个密钥以便轮换。
+# 不要把真实密钥提交到 Git；生产环境请替换为足够长的随机值。
+keys = ["change-me-use-a-long-random-key"]
+# 登录会话绝对有效期，单位秒。
+session_ttl_seconds = 43200
+# 通过 HTTPS 访问时设为 true；纯 HTTP 本地调试设为 false。
+cookie_secure = false
+
+[access.login_rate_limit]
+# 同一来源在 window_seconds 内失败 max_failures 次后锁定 lockout_seconds。
+max_failures = 5
+window_seconds = 300
+lockout_seconds = 900
+
+[tunnel]
+# 远程电脑连接隧道服务器使用的受限 SSH 用户。
+user = "tunnel"
+# 隧道服务器地址，写入 ssh -R 命令。
+server_host = "tunnel.example.com"
+server_port = 22
+# 宿主机上可分配的隧道端口范围（闭区间）。
+port_start = 30000
+port_end = 30099
+# 默认有效期，必须属于 allowed_ttl_seconds。
+default_ttl_seconds = 3600
+# 申请页下拉框可选档位，单位秒。
+allowed_ttl_seconds = [900, 3600, 21600, 86400]
+# 同一来源在该窗口内重复申请时返回已有隧道，避免占满端口。
+dedupe_window_seconds = 300
+# 已过期记录在管理页保留的秒数，便于查看；超过后自动移除。
+expired_retention_seconds = 600
+# 清理宿主机 sshd 进程的最长等待秒数。
+cleanup_timeout_seconds = 10
+# 初始监听策略：loopback、all 或 specific。默认仅回环。
+listen_mode = "loopback"
+# 指定地址模式保存的单个 IP；其他模式可留空。
+specific_listen_ip = ""
+# 全部地址模式下给 Agent 使用的对外可达地址，不能是 0.0.0.0。
+public_host = "tunnel.example.com"
+# ssh 客户端保活参数。
+keepalive_interval_seconds = 15
+keepalive_count_max = 3
+
+[limits.application]
+# 同一来源申请接口限流：window_seconds 内最多 max_requests 次。
+max_requests = 10
+window_seconds = 60
+
+[limits.status]
+# 状态查询限流，必须严格高于申请接口。
+max_requests = 180
+window_seconds = 60
+
+[status]
+# 前端状态轮询间隔，单位秒，最小 5。
+poll_interval_seconds = 5
+
+[reaper]
+# 自动回收检查周期，单位秒。
+interval_seconds = 5
+
+[cleanup]
+# auto：非 root 时先尝试受限 sudo helper，再尝试直接清理；
+# direct：直接使用 ss 查找并结束进程；helper：只使用 sudo helper。
+strategy = "auto"
+# 镜像内受限清理工具路径。
+helper_path = "/usr/local/libexec/sshport-cleanup"
+sudo_path = "/usr/bin/sudo"
+# 只允许结束这些进程名对应的监听进程。
+# OpenSSH 9.8+ 的会话进程名可能是 sshd-session，因此同时保留两种。
+process_names = ["sshd", "sshd-session"]
+# 启动时清理端口范围内残留的 sshd 监听。
+clean_orphans_on_startup = true
+
+[logging]
+# DEBUG、INFO、WARNING、ERROR、CRITICAL。
+level = "INFO"
+# 是否记录 HTTP 访问日志。
+access_log = true
+
+[storage]
+# 管理页策略快照；相对路径相对于本配置文件所在目录。
+# 容器内使用挂载的可写数据卷。
+policy_state_file = "/app/data/policy.json"

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}一次性反向 SSH 隧道{% endblock %} - 隧道管理</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="/">
+        <span class="brand-title">一次性反向 SSH 隧道</span>
+        <span class="brand-subtitle">端口分配与生命周期管理</span>
+      </a>
+      {% if nav %}
+      <nav class="site-nav" aria-label="主导航">
+        {% set current_path = request.url.path %}
+        <a href="/apply"{% if current_path.startswith('/apply') %} class="active" aria-current="page"{% endif %}>申请隧道</a>
+        <a href="/admin"{% if current_path.startswith('/admin') %} class="active" aria-current="page"{% endif %}>管理</a>
+        <form class="logout-form" method="post" action="/logout">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="link-button" type="submit">退出登录</button>
+        </form>
+      </nav>
+      {% endif %}
+    </div>
+  </header>
+
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <span>时间以 UTC 保存，页面按 {{ timezone_name }} 显示。</span>
+      <span>状态仅反映服务器端口是否在监听，不探测远程 SSH 服务。</span>
+    </div>
+  </footer>
+</body>
+</html>

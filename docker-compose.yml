@@ -1,0 +1,30 @@
+services:
+  sshport:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sshport:1.0.0
+    container_name: sshport
+    restart: unless-stopped
+    # 宿主机网络：隧道端口由宿主机 sshd 监听，容器必须看到宿主机真实端口。
+    network_mode: host
+    # 共享 PID 命名空间：让清理 helper 能看到并结束宿主机 sshd 隧道子进程。
+    pid: host
+    environment:
+      TZ: "${TZ:-UTC}"
+      SSHPORT_CONFIG: /app/config/config.toml
+    volumes:
+      - ./config:/app/config:ro
+      # 可写：管理页保存监听策略快照。
+      - ./data:/app/data
+      # 供运维放置 Agent 私钥等材料；服务本身不读取。
+      - ./keys:/app/keys:ro
+      # 服务日志输出到 stdout；该目录用于可选的额外日志收集。
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "/app/docker/healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    stop_grace_period: 10s

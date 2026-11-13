@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge %}
+{% block title %}管理{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>隧道管理</h1>
+    <p class="lead">查看全部隧道记录，手动删除隧道，并配置新隧道使用的监听地址策略。</p>
+  </div>
+  <a class="button button-secondary" href="/apply">申请新隧道</a>
+</div>
+
+{% if message %}
+<div class="alert alert-{{ message_kind }}" role="{{ 'alert' if message_kind == 'error' else 'status' }}">{{ message }}</div>
+{% endif %}
+
+{% if probe_error %}
+<div class="alert alert-warning" role="alert">无法读取宿主机端口状态：{{ probe_error }}。当前隧道状态暂显示为“未知”。</div>
+{% endif %}
+
+<div class="stats" aria-label="隧道统计">
+  <div class="stat">
+    <span class="stat-label">当前记录</span>
+    <strong>{{ views|length }}</strong>
+  </div>
+  <div class="stat">
+    <span class="stat-label">待连接</span>
+    <strong>{{ pending_count }}</strong>
+  </div>
+  <div class="stat">
+    <span class="stat-label">已建立</span>
+    <strong>{{ established_count }}</strong>
+  </div>
+  <div class="stat">
+    <span class="stat-label">已过期</span>
+    <strong>{{ expired_count }}</strong>
+  </div>
+</div>
+
+<section class="panel" aria-labelledby="policy-title">
+  <div class="panel-heading">
+    <div>
+      <h2 id="policy-title">监听地址策略</h2>
+      <p class="muted">保存后只影响新申请的隧道，已建立的隧道保持原有绑定地址。</p>
+    </div>
+  </div>
+
+  {% if form_error %}
+  <div class="alert alert-error" role="alert">{{ form_error }}</div>
+  {% endif %}
+
+  <form method="post" action="/admin/policy" class="form policy-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <fieldset class="fieldset">
+      <legend>选择策略</legend>
+      {% for option in mode_options %}
+      <div class="radio-option{% if option.risk %} radio-option-risk{% endif %}">
+        <input type="radio" id="mode-{{ option.value }}" name="listen_mode" value="{{ option.value }}"
+               {% if form_mode == option.value %}checked{% endif %} data-policy-mode>
+        <label for="mode-{{ option.value }}">
+          <span class="radio-title">{{ option.label }}</span>
+          <span class="radio-description">{{ option.description }}</span>
+          {% if option.risk %}
+          <span class="radio-risk">风险提示：选择后，任何能路由到服务器的机器都可能尝试连接该隧道端口。</span>
+          {% endif %}
+        </label>
+      </div>
+      {% endfor %}
+    </fieldset>
+
+    <div class="alert alert-warning" data-all-risk{% if form_mode != 'all' %} hidden{% endif %}>
+      当前选择为“全部地址”。隧道端口会监听 0.0.0.0，外部网络可直接连接。请确认防火墙、安全组和远程电脑的访问控制允许这种暴露。
+    </div>
+
+    <div class="field" data-specific-wrapper{% if form_mode != 'specific' %} hidden{% endif %}>
+      <label for="specific_ip">指定监听 IP</label>
+      <input id="specific_ip" name="specific_ip" type="text" value="{{ form_specific }}"
+             inputmode="text" spellcheck="false" data-specific-input
+             aria-describedby="specific-ip-help">
+      <p class="field-help" id="specific-ip-help">必须是宿主机某块网卡上已存在的单个 IPv4 或 IPv6 地址，不支持 CIDR 网段。保存时会校验。</p>
+    </div>
+
+    <div class="form-actions">
+      <button class="button button-primary" type="submit">保存策略</button>
+      <span class="muted">默认策略为仅回环地址。策略变更不会重建已有隧道。</span>
+    </div>
+  </form>
+</section>
+
+<section class="panel" aria-labelledby="tunnels-title">
+  <div class="panel-heading">
+    <div>
+      <h2 id="tunnels-title">全部隧道</h2>
+      <p class="muted">状态在打开本页时实时探测。过期记录会保留一段时间用于展示，之后由自动回收移除。</p>
+    </div>
+  </div>
+
+  {% if views %}
+  <div class="table-wrap">
+    <table class="tunnel-table">
+      <thead>
+        <tr>
+          <th scope="col">端口</th>
+          <th scope="col">远程目标</th>
+          <th scope="col">创建时间</th>
+          <th scope="col">剩余有效期</th>
+          <th scope="col">监听地址</th>
+          <th scope="col">状态</th>
+          <th scope="col">备注</th>
+          <th scope="col">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for view in views %}
+        <tr>
+          <td><code>{{ view.record.port }}</code></td>
+          <td>
+            <span>{{ view.record.remote_user }}</span>
+            <span class="muted">SSH 端口 {{ view.record.remote_port }}</span>
+          </td>
+          <td>{{ view.record.created_at|localtime }}</td>
+          <td>
+            <span>{{ view.remaining_seconds|compact_remaining }}</span>
+            <span class="muted">至 {{ view.record.expires_at|localtime }}</span>
+          </td>
+          <td>
+            <code>{{ view.record.bind_address }}</code>
+            {% if view.actual_addresses %}
+            <span class="muted">实际 {{ view.actual_addresses|join(', ') }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {{ status_badge(view.state.value, view.state|state_label) }}
+            {% if view.record.cleanup_pending %}
+            <span class="muted">清理待重试</span>
+            {% endif %}
+          </td>
+          <td class="note-cell">{{ view.record.note or "无" }}</td>
+          <td class="actions-cell">
+            <form method="post" action="/admin/tunnels/{{ view.record.id }}/delete"
+                  class="delete-form" data-delete-form>
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="confirm" value="yes">
+              <button class="button button-danger button-small" type="button" data-delete-arm>删除</button>
+              <div class="delete-confirm" data-delete-confirm hidden>
+                <p>确认删除端口 {{ view.record.port }}？对应监听进程会被立即清理，端口回到可用池。</p>
+                <div class="button-row">
+                  <button class="button button-danger button-small" type="submit">确认删除</button>
+                  <button class="button button-secondary button-small" type="button" data-delete-cancel>取消</button>
+                </div>
+              </div>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <p>当前没有隧道记录。</p>
+    <p class="muted">申请成功后，记录会出现在这里，并显示实时监听状态。</p>
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel" aria-labelledby="admin-notes-title">
+  <h2 id="admin-notes-title">管理说明</h2>
+  <ul class="notes">
+    <li>手动删除会立即清理宿主机上占用该端口的 sshd 隧道进程，并将端口回收。操作会记录端口、时间和请求来源。</li>
+    <li>自动回收按有效期和端口监听状态兜底执行，和手动删除使用同一套清理逻辑。</li>
+    <li>“待连接”表示端口已分配但尚未观察到监听；“已建立”表示宿主机端口正在监听；“已过期”表示记录已失效或监听已消失。</li>
+    <li>网站不探测远程电脑的 SSH 服务，只探测服务器上的端口监听状态。</li>
+  </ul>
+</section>
+{% endblock %}

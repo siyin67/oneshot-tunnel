@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}登录{% endblock %}
+
+{% block content %}
+<section class="auth-panel" aria-labelledby="login-title">
+  <h1 id="login-title">登录管理端</h1>
+  <p class="lead">输入配置文件中的访问密钥。此站点只有服务器拥有者一个用户。</p>
+
+  {% if error %}
+  <div class="alert alert-error" role="alert">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" action="/login" class="form" autocomplete="off">
+    <input type="hidden" name="next" value="{{ next_path }}">
+    <div class="field">
+      <label for="access_key">访问密钥</label>
+      <input id="access_key" name="access_key" type="password" required autofocus
+             autocomplete="current-password" spellcheck="false"
+             aria-describedby="access-key-help">
+      <p class="field-help" id="access-key-help">密钥不会显示在日志中。</p>
+    </div>
+    <div class="form-actions">
+      <button class="button button-primary" type="submit">登录</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

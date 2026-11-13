@@ -1,0 +1,11 @@
+{% macro status_badge(state, label) -%}
+<span class="badge badge-{{ state }}">{{ label }}</span>
+{%- endmacro %}
+
+{% macro field_error(name, errors) -%}
+{% if errors.get(name) %}<p class="field-error" id="{{ name }}-error">{{ errors.get(name) }}</p>{% endif %}
+{%- endmacro %}
+
+{% macro copy_feedback(target_id) -%}
+<span class="copy-feedback" id="{{ target_id }}-feedback" role="status" aria-live="polite"></span>
+{%- endmacro %}

@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge, field_error, copy_feedback %}
+{% block title %}申请隧道{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>申请一次性反向 SSH 隧道</h1>
+    <p class="lead">分配一个宿主机端口，生成在远程电脑执行的 ssh -R 命令，以及可粘贴给本地 Agent 的提示词。</p>
+  </div>
+</div>
+
+{% if message and not result %}
+<div class="alert alert-{{ message_kind }}" role="{{ 'alert' if message_kind == 'error' else 'status' }}">{{ message }}</div>
+{% endif %}
+
+{% if result and status_payload %}
+<article class="panel result-panel" id="tunnel-result"
+         data-tunnel-id="{{ result.id }}"
+         data-status-url="/api/tunnels/{{ result.id }}/status"
+         data-state="{{ status_payload.state }}"
+         data-expires-at="{{ result.expires_at|iso_utc }}"
+         data-poll-seconds="{{ poll_interval }}">
+  <div class="panel-heading result-heading">
+    <div>
+      <h2>隧道已分配</h2>
+      <p class="muted">端口 {{ result.port }} 已在记录中保留，等待远程电脑连接。</p>
+    </div>
+    <div class="status-block">
+      <span data-status-badge>{{ status_badge(status_payload.state, status_payload.state_label) }}</span>
+      <span class="remaining" data-remaining>剩余 {{ status_payload.remaining_seconds|compact_remaining }}</span>
+    </div>
+  </div>
+
+  {% if message %}
+  <div class="alert alert-{{ message_kind }}" role="status">{{ message }}</div>
+  {% endif %}
+
+  <div class="meta-grid">
+    <div class="meta-item">
+      <span class="meta-label">分配端口</span>
+      <span class="meta-value"><code>{{ result.port }}</code></span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">监听地址</span>
+      <span class="meta-value"><code>{{ result.listen_address }}</code></span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">Agent 连接地址</span>
+      <span class="meta-value"><code>{{ result.connect_host }}:{{ result.port }}</code></span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">过期时间</span>
+      <span class="meta-value">{{ result.expires_at|localtime }}（{{ timezone_name }}）</span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">实际监听地址</span>
+      <span class="meta-value" data-actual-listen>
+        {%- if status_payload.actual_listen_addresses -%}
+          {{ status_payload.actual_listen_addresses|join(', ') }}
+        {%- else -%}
+          尚未监听
+        {%- endif -%}
+      </span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">最近检查</span>
+      <span class="meta-value" data-checked-at data-iso="{{ status_payload.checked_at|iso_utc }}">{{ status_payload.checked_at|localtime }}</span>
+    </div>
+  </div>
+
+  <div class="status-toolbar">
+    <button class="button button-secondary button-small" type="button" data-refresh-status>刷新状态</button>
+    <span class="muted">每 {{ poll_interval }} 秒自动刷新；页面不可见时暂停。</span>
+  </div>
+  <p class="status-message" data-status-message role="status" aria-live="polite"></p>
+
+  <section class="copy-section" aria-labelledby="command-title">
+    <div class="section-heading">
+      <h3 id="command-title">在远程电脑执行的命令</h3>
+      <button class="button button-secondary button-small" type="button"
+              data-copy-target="ssh-command" data-copy-feedback="ssh-command-feedback">复制命令</button>
+    </div>
+    <pre class="code-block" id="ssh-command"><code>{{ result.ssh_command }}</code></pre>
+    {{ copy_feedback("ssh-command") }}
+    <p class="field-help">先确认远程电脑到隧道服务器的 {{ tunnel_server_port }} 端口可达，再执行此命令。不要在本地 Agent 上执行。</p>
+  </section>
+
+  <section class="copy-section" aria-labelledby="prompt-title">
+    <div class="section-heading">
+      <h3 id="prompt-title">粘贴给本地 Agent 的提示词</h3>
+      <button class="button button-secondary button-small" type="button"
+              data-copy-target="agent-prompt" data-copy-feedback="agent-prompt-feedback">复制提示词</button>
+    </div>
+    <pre class="prompt-block" id="agent-prompt"><code>{{ result.agent_prompt }}</code></pre>
+    {{ copy_feedback("agent-prompt") }}
+  </section>
+
+  <div class="alert alert-info">
+    <p>隧道为一次性资源。到期、远程命令结束或端口不再监听后，端口会被自动回收；也可以在管理页手动删除。</p>
+    <p>网站只检查服务器上的端口是否在监听，不验证远程电脑的 SSH 服务是否可用。</p>
+  </div>
+</article>
+{% endif %}
+
+<section class="panel" aria-labelledby="apply-title">
+  <div class="panel-heading">
+    <div>
+      <h2 id="apply-title">{% if result %}再申请一条隧道{% else %}填写申请信息{% endif %}</h2>
+      <p class="muted">监听地址策略由管理页统一配置，此处只读。</p>
+    </div>
+  </div>
+
+  <div class="policy-summary">
+    <div>
+      <span class="meta-label">当前监听策略</span>
+      <strong>{{ policy.label }}</strong>
+    </div>
+    <div>
+      <span class="meta-label">绑定地址</span>
+      <code>{{ policy.bind_address }}</code>
+    </div>
+    <div>
+      <span class="meta-label">Agent 连接地址</span>
+      <code>{{ policy.display_agent_host(policy_info.public_host) }}</code>
+    </div>
+    <p class="muted">{{ policy.description }} 策略变更只影响新申请的隧道。</p>
+  </div>
+
+  <form method="post" action="/apply" class="form" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <div class="field">
+      <label for="remote_user">远程电脑的 SSH 用户名 <span class="required-mark">必填</span></label>
+      <input id="remote_user" name="remote_user" type="text" value="{{ values.remote_user }}"
+             required maxlength="64" spellcheck="false"
+             {% if errors.remote_user %}aria-invalid="true" aria-describedby="remote_user-error"{% else %}aria-describedby="remote-user-help"{% endif %}>
+      <p class="field-help" id="remote-user-help">用于本地 Agent 通过隧道登录远程电脑，默认 root。</p>
+      {{ field_error("remote_user", errors) }}
+    </div>
+
+    <div class="field">
+      <label for="remote_port">远程电脑的 SSH 端口 <span class="optional-mark">选填</span></label>
+      <input id="remote_port" name="remote_port" type="number" inputmode="numeric"
+             min="1" max="65535" value="{{ values.remote_port }}"
+             {% if errors.remote_port %}aria-invalid="true" aria-describedby="remote_port-error"{% else %}aria-describedby="remote-port-help"{% endif %}>
+      <p class="field-help" id="remote-port-help">远程电脑 sshd 的端口，留空使用 22。</p>
+      {{ field_error("remote_port", errors) }}
+    </div>
+
+    <div class="field">
+      <label for="ttl_seconds">隧道有效期</label>
+      <select id="ttl_seconds" name="ttl_seconds" required
+              {% if errors.ttl_seconds %}aria-invalid="true" aria-describedby="ttl_seconds-error"{% endif %}>
+        {% for option in ttl_options %}
+        <option value="{{ option.seconds }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+        {% endfor %}
+      </select>
+      <p class="field-help">到期后端口自动回收。可选档位由配置文件约束。</p>
+      {{ field_error("ttl_seconds", errors) }}
+    </div>
+
+    <div class="field">
+      <label for="note">备注或标识 <span class="optional-mark">选填</span></label>
+      <input id="note" name="note" type="text" value="{{ values.note }}" maxlength="120"
+             {% if errors.note %}aria-invalid="true" aria-describedby="note-error"{% else %}aria-describedby="note-help"{% endif %}>
+      <p class="field-help" id="note-help">只用于管理页展示和日志，例如“办公室测试机”。</p>
+      {{ field_error("note", errors) }}
+    </div>
+
+    <div class="form-actions">
+      <button class="button button-primary" type="submit">申请隧道</button>
+      <span class="muted">同一来源短时间内重复申请会返回已有隧道，避免占满端口。</span>
+    </div>
+  </form>
+</section>
+
+<section class="panel" aria-labelledby="flow-title">
+  <h2 id="flow-title">使用流程</h2>
+  <ol class="steps">
+    <li>在此页申请，获得服务器端口、ssh -R 命令和 Agent 提示词。</li>
+    <li>在远程电脑上执行命令，保持该 ssh 进程运行。</li>
+    <li>在服务器本机打开终端，把提示词粘贴给本地 Agent。</li>
+    <li>任务结束后终止远程电脑上的 ssh 命令；隧道到期或断开后端口自动回收。</li>
+  </ol>
+  <p class="muted">默认仅回环策略下，只有服务器本机的 Agent 能连接隧道。全部地址和指定地址策略需要宿主机 sshd 允许非回环绑定。</p>
+</section>
+{% endblock %}

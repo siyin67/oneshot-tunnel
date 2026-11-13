@@ -1,0 +1,24 @@
+.git
+.gitignore
+.github
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.tmp
+.acl-recovery
+.smoke_test.py
+.env
+
+# Never bake runtime configuration or data into the image.
+config
+data
+logs
+keys
+
+tests
+docs
+*.md
