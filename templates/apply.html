@@ -102,7 +102,7 @@
     </div>
     <pre class="code-block" id="ssh-command"><code>{{ result.ssh_command }}</code></pre>
     {{ copy_feedback("ssh-command") }}
-    <p class="field-help">先确认远程电脑到隧道服务器的 {{ tunnel_server_port }} 端口可达，再执行此命令。终端会提示输入服务器账号 {{ result.server_user }} 的密码，不是上面生成的远程密码；不要在本地 Agent 上执行。</p>
+    <p class="field-help">先确认远程电脑到隧道服务器的 {{ result.server_port }} 端口可达，再执行此命令。终端会提示输入服务器账号 {{ result.server_user }} 的密码，不是上面生成的远程密码；不要在本地 Agent 上执行。</p>
   </section>
 
   <section class="copy-section" aria-labelledby="prompt-title">
@@ -163,8 +163,17 @@
       <input id="server_user" name="server_user" type="text" value="{{ values.server_user }}"
              required maxlength="32" spellcheck="false"
              {% if errors.server_user %}aria-invalid="true" aria-describedby="server_user-error"{% else %}aria-describedby="server-user-help"{% endif %}>
-      <p class="field-help" id="server-user-help">远程电脑执行 ssh -R 时登录的服务器账号，默认 {{ default_server_user }}。该账号必须已在服务器创建并设置密码，且服务器的 PermitListen 配置允许其监听分配到的端口；不是远程 Windows 用户名。</p>
+      <p class="field-help" id="server-user-help">远程 Windows 执行 ssh -R 时登录的服务器账号，默认 {{ default_server_user }}。该账号必须已在服务器创建并设置密码，且服务器的 PermitListen 配置允许其监听分配到的端口；不是远程 Windows 用户名。</p>
       {{ field_error("server_user", errors) }}
+    </div>
+
+    <div class="field">
+      <label for="server_port">连接服务器的 SSH 端口 <span class="optional-mark">选填</span></label>
+      <input id="server_port" name="server_port" type="number" inputmode="numeric"
+             min="1" max="65535" value="{{ values.server_port }}"
+             {% if errors.server_port %}aria-invalid="true" aria-describedby="server_port-error"{% else %}aria-describedby="server-port-help"{% endif %}>
+      <p class="field-help" id="server-port-help">服务器 sshd 监听的端口，默认 {{ default_server_port }}，不能落在隧道分配端口范围内。不是分配到的隧道端口，也不是远程 Windows 的 SSH 端口。</p>
+      {{ field_error("server_port", errors) }}
     </div>
 
     <div class="field">

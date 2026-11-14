@@ -53,6 +53,7 @@ def test_command_and_prompt_contain_required_contract(service: TunnelService):
 
     command = payload["ssh_command"]
     assert "-N -T" in command
+    assert "-p 22 " in command
     assert "-o ExitOnForwardFailure=yes" in command
     assert "-o ServerAliveInterval=15" in command
     assert "-o ServerAliveCountMax=3" in command
@@ -83,6 +84,15 @@ def test_custom_server_user_is_used_in_command_and_prompt(service: TunnelService
     assert application.record.server_user == "ops"
     assert "ops@tunnel.example.com" in payload["ssh_command"]
     assert "服务器用户 ops" in payload["agent_prompt"]
+
+
+def test_custom_server_port_is_used_in_command(service: TunnelService):
+    application = create(service, server_port=2222)
+    payload = service.application_payload(application)
+
+    assert payload["server_port"] == 2222
+    assert application.record.server_port == 2222
+    assert "-p 2222 " in payload["ssh_command"]
 
 
 def test_password_auth_and_remote_setup_command(service: TunnelService, caplog):
@@ -133,6 +143,20 @@ def test_dedupe_keeps_the_same_remote_password(service: TunnelService):
     again = create(service)
     assert again.reused is True
     assert again.record.remote_password == first.record.remote_password
+
+
+def test_dedupe_does_not_reuse_a_different_server_endpoint(service: TunnelService):
+    first = create(service)
+
+    changed_port = create(service, server_port=2222)
+    assert changed_port.reused is False
+    assert changed_port.record.id != first.record.id
+    assert changed_port.record.server_port == 2222
+
+    changed_user = create(service, server_user="ops")
+    assert changed_user.reused is False
+    assert changed_user.record.id != changed_port.record.id
+    assert changed_user.record.server_user == "ops"
 
 
 def test_allocation_skips_listening_and_in_memory_ports(service: TunnelService, ports):
@@ -196,6 +220,22 @@ def test_request_validation(service: TunnelService):
     with pytest.raises(ValidationError) as exc:
         create(service, server_user="")
     assert "server_user" in exc.value.fields
+
+    with pytest.raises(ValidationError) as exc:
+        create(service, server_port="2222")
+    assert "server_port" in exc.value.fields
+
+    with pytest.raises(ValidationError) as exc:
+        create(service, server_port=0)
+    assert "server_port" in exc.value.fields
+
+    with pytest.raises(ValidationError) as exc:
+        create(service, server_port=70000)
+    assert "server_port" in exc.value.fields
+
+    with pytest.raises(ValidationError) as exc:
+        create(service, server_port=32000)
+    assert "server_port" in exc.value.fields
 
     with pytest.raises(ValidationError) as exc:
         create(service, ttl_seconds=999)

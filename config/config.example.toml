@@ -32,6 +32,7 @@ lockout_seconds = 900
 user = "tunnel"
 # 隧道服务器地址，写入 ssh -R 命令。
 server_host = "tunnel.example.com"
+# 隧道服务器 SSH 端口；申请页默认使用此值，可为单条隧道覆盖。
 server_port = 22
 # 宿主机上可分配的隧道端口范围（闭区间）。
 port_start = 30000

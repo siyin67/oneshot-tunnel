@@ -323,6 +323,7 @@ def create_app(
             "remote_user": DEFAULT_REMOTE_USER,
             "remote_port": "22",
             "server_user": config.tunnel.user,
+            "server_port": str(config.tunnel.server_port),
             "ttl_seconds": str(config.tunnel.default_ttl_seconds),
             "note": "",
         }
@@ -347,8 +348,7 @@ def create_app(
                 "default_remote_port": 22,
                 "default_remote_user": DEFAULT_REMOTE_USER,
                 "default_server_user": config.tunnel.user,
-                "tunnel_server_port": config.tunnel.server_port,
-                "tunnel_server_host": config.tunnel.server_host,
+                "default_server_port": config.tunnel.server_port,
             }
         )
         return context
@@ -496,6 +496,7 @@ def create_app(
         ip = source_ip(request)
         decision = apply_limiter.check(ip)
         server_user_raw = form.get("server_user")
+        server_port_raw = str(form.get("server_port") or "").strip()
         values = {
             "remote_user": str(form.get("remote_user") or ""),
             "remote_port": str(form.get("remote_port") or ""),
@@ -504,6 +505,7 @@ def create_app(
                 if server_user_raw is None
                 else server_user_raw
             ),
+            "server_port": server_port_raw or str(config.tunnel.server_port),
             "ttl_seconds": str(form.get("ttl_seconds") or ""),
             "note": str(form.get("note") or ""),
         }
@@ -521,6 +523,15 @@ def create_app(
             return response
 
         errors: dict[str, str] = {}
+        server_port_raw = values["server_port"].strip()
+        if not server_port_raw:
+            server_port = config.tunnel.server_port
+        else:
+            try:
+                server_port = int(server_port_raw)
+            except ValueError:
+                server_port = 0
+                errors["server_port"] = "连接服务器的 SSH 端口必须是整数"
         remote_port_raw = values["remote_port"].strip()
         if not remote_port_raw:
             remote_port = 22
@@ -548,6 +559,7 @@ def create_app(
                 remote_user=values["remote_user"],
                 remote_port=remote_port,
                 server_user=values["server_user"],
+                server_port=server_port,
                 ttl_seconds=ttl_seconds,
                 note=values["note"],
                 source=ip,
@@ -703,6 +715,14 @@ def create_app(
         if not isinstance(server_user, str):
             fields["server_user"] = "连接服务器的 SSH 用户名必须是字符串"
             server_user = ""
+        server_port_raw = body.get("server_port", config.tunnel.server_port)
+        server_port = config.tunnel.server_port
+        if server_port_raw is None or server_port_raw == "":
+            server_port = config.tunnel.server_port
+        elif isinstance(server_port_raw, int) and not isinstance(server_port_raw, bool):
+            server_port = server_port_raw
+        else:
+            fields["server_port"] = "连接服务器的 SSH 端口必须是整数"
         remote_port_raw = body.get("remote_port", 22)
         remote_port = 22
         if remote_port_raw is None or remote_port_raw == "":
@@ -738,6 +758,7 @@ def create_app(
             remote_user=remote_user,
             remote_port=remote_port,
             server_user=server_user,
+            server_port=server_port,
             ttl_seconds=ttl_seconds,
             note=note,
             source=source_ip(request),

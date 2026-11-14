@@ -231,7 +231,7 @@ class TunnelService:
         bind_part = f"[{bind}]" if ":" in bind else bind
         target = f"{record.server_user}@{format_host_for_ssh(tunnel.server_host)}"
         return (
-            f"ssh -N -T -p {tunnel.server_port} "
+            f"ssh -N -T -p {record.server_port} "
             f"-o ExitOnForwardFailure=yes "
             f"-o PreferredAuthentications=password "
             f"-o PubkeyAuthentication=no "
@@ -314,12 +314,27 @@ class TunnelService:
     async def _listening_snapshot(self) -> dict[int, tuple[str, ...]]:
         return await asyncio.to_thread(self.ports.listening_ports)
 
-    def _find_dedupe_candidate(self, source: str, now: datetime) -> TunnelRecord | None:
+    def _find_dedupe_candidate(
+        self,
+        source: str,
+        now: datetime,
+        *,
+        server_user: str,
+        server_port: int,
+        remote_user: str,
+        remote_port: int,
+        ttl_seconds: int,
+    ) -> TunnelRecord | None:
         cutoff = now - timedelta(seconds=self.config.tunnel.dedupe_window_seconds)
         candidates = [
             record
             for record in self._records.values()
             if record.source == source
+            and record.server_user == server_user
+            and record.server_port == server_port
+            and record.remote_user == remote_user
+            and record.remote_port == remote_port
+            and record.ttl_seconds == ttl_seconds
             and record.expired_at is None
             and record.created_at >= cutoff
             and record.expires_at > now
@@ -331,11 +346,12 @@ class TunnelService:
     def _validate_request(
         self,
         server_user: str | None,
+        server_port: int | None,
         remote_user: str,
         remote_port: int,
         ttl_seconds: int,
         note: str,
-    ) -> tuple[str, str, int, str]:
+    ) -> tuple[str, int, str, int, str]:
         fields: dict[str, str] = {}
         raw_server_user = (
             self.config.tunnel.user if server_user is None else server_user
@@ -352,6 +368,24 @@ class TunnelService:
                     "服务器用户名只能包含字母、数字、点、下划线、连字符，"
                     "长度 1-32，且不能以连字符开头"
                 )
+        raw_server_port = (
+            self.config.tunnel.server_port if server_port is None else server_port
+        )
+        if not isinstance(raw_server_port, int) or isinstance(raw_server_port, bool):
+            fields["server_port"] = "连接服务器的 SSH 端口必须是整数"
+            normalized_server_port = 0
+        elif not 1 <= raw_server_port <= 65_535:
+            fields["server_port"] = "连接服务器的 SSH 端口必须在 1 到 65535 之间"
+            normalized_server_port = 0
+        elif (
+            self.config.tunnel.port_start
+            <= raw_server_port
+            <= self.config.tunnel.port_end
+        ):
+            fields["server_port"] = "连接服务器的 SSH 端口不能位于隧道端口范围内"
+            normalized_server_port = 0
+        else:
+            normalized_server_port = raw_server_port
         normalized_user = remote_user.strip()
         if not normalized_user:
             fields["remote_user"] = "远程 SSH 用户名不能为空"
@@ -377,7 +411,13 @@ class TunnelService:
             fields["note"] = "备注不能包含控制字符"
         if fields:
             raise ValidationError(fields)
-        return normalized_server_user, normalized_user, remote_port, normalized_note
+        return (
+            normalized_server_user,
+            normalized_server_port,
+            normalized_user,
+            remote_port,
+            normalized_note,
+        )
 
     async def create_tunnel(
         self,
@@ -388,18 +428,28 @@ class TunnelService:
         note: str,
         source: str,
         server_user: str | None = None,
+        server_port: int | None = None,
     ) -> TunnelApplication:
         (
             normalized_server_user,
+            normalized_server_port,
             normalized_user,
             normalized_port,
             normalized_note,
         ) = self._validate_request(
-            server_user, remote_user, remote_port, ttl_seconds, note
+            server_user, server_port, remote_user, remote_port, ttl_seconds, note
         )
         now = self._clock()
         async with self._allocate_lock:
-            existing = self._find_dedupe_candidate(source, now)
+            existing = self._find_dedupe_candidate(
+                source,
+                now,
+                server_user=normalized_server_user,
+                server_port=normalized_server_port,
+                remote_user=normalized_user,
+                remote_port=normalized_port,
+                ttl_seconds=ttl_seconds,
+            )
             if existing is not None:
                 logger.info(
                     "重复申请复用隧道：id=%s port=%s source=%s",
@@ -441,6 +491,7 @@ class TunnelService:
                 remote_user=normalized_user,
                 remote_port=normalized_port,
                 server_user=normalized_server_user,
+                server_port=normalized_server_port,
                 remote_password=self._password_factory(),
                 note=normalized_note,
                 source=source,
@@ -451,12 +502,13 @@ class TunnelService:
             self._records[record.id] = record
             self._port_to_id[selected] = record.id
             logger.info(
-                "隧道已分配：id=%s port=%s ttl=%ss server_user=%s "
+                "隧道已分配：id=%s port=%s ttl=%ss server_user=%s server_port=%s "
                 "remote_user=%s remote_port=%s listen_mode=%s bind=%s source=%s",
                 record.id,
                 record.port,
                 record.ttl_seconds,
                 record.server_user,
+                record.server_port,
                 record.remote_user,
                 record.remote_port,
                 record.policy.mode.value,
@@ -475,6 +527,7 @@ class TunnelService:
             "id": record.id,
             "port": record.port,
             "server_user": record.server_user,
+            "server_port": record.server_port,
             "remote_user": record.remote_user,
             "remote_port": record.remote_port,
             "remote_password": record.remote_password,

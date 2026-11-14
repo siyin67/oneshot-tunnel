@@ -393,7 +393,7 @@ docker compose down
 | --- | --- | --- | --- |
 | `user` | 字符串 | 申请页默认的服务器 SSH 用户；可被单次申请覆盖 | 合法用户名；每个可用账号需在宿主机设置密码并列入 `Match User`，密码不写入本配置 |
 | `server_host` | 字符串 | 隧道服务器地址，写入 `ssh -R` 命令 | 主机名或 IP，不带端口/协议 |
-| `server_port` | 整数 | 隧道服务器 SSH 端口 | 1-65535，且不在隧道端口范围内 |
+| `server_port` | 整数 | 申请页默认的隧道服务器 SSH 端口；可被单次申请覆盖 | 1-65535，且不在隧道端口范围内 |
 | `port_start` / `port_end` | 整数 | 宿主机可分配的闭区间端口范围 | 1-65535，start <= end |
 | `default_ttl_seconds` | 整数 | 申请页默认有效期 | 60-31536000，且必须属于 allowed 档位 |
 | `allowed_ttl_seconds` | 整数数组 | 申请页下拉档位（秒） | 非空、无重复、60-31536000 |
@@ -406,7 +406,7 @@ docker compose down
 | `keepalive_interval_seconds` | 整数 | `ServerAliveInterval` | 1-3600 |
 | `keepalive_count_max` | 整数 | `ServerAliveCountMax` | 正整数 |
 
-`tunnel.user` 只是申请页的默认服务器账号名。申请者可以在表单中为单条隧道填写其他服务器账号；网站只校验用户名格式，不校验账号是否存在，也不保存密码。每个允许使用的账号都必须由宿主机管理员用 `passwd` 设置密码，并出现在 3.3 的 `Match User` 列表中。远程 Windows 上被操作的账号则是另一回事：它由申请页生成，用户名默认 `sshport`，密码随机生成并显示在结果页。
+`tunnel.user` 只是申请页的默认服务器账号名。申请者可以在表单中为单条隧道填写其他服务器账号；网站只校验用户名格式，不校验账号是否存在，也不保存密码。每个允许使用的账号都必须由宿主机管理员用 `passwd` 设置密码，并出现在 3.3 的 `Match User` 列表中。`tunnel.server_port` 同理只是默认值，申请页可为单条隧道填写其他 SSH 端口；该端口必须是服务器 sshd 实际监听的端口，且不能落在隧道端口范围内。远程 Windows 上被操作的账号则是另一回事：它由申请页生成，用户名默认 `sshport`，密码随机生成并显示在结果页。
 
 `listen_mode` 是首次启动的初始值。管理页保存过策略后，`data/policy.json` 优先；删除该文件可恢复配置文件值。
 
@@ -453,7 +453,7 @@ docker compose down
 ### 8.1 申请隧道
 
 1. 登录后打开申请页。
-2. 填写连接服务器的 SSH 用户名（默认使用配置中的 `tunnel.user`）、远程 Windows 的 SSH 用户名（默认 `sshport`，必须是专用标准用户，最多 20 个字符）、远程 SSH 端口（默认 22）、有效期、备注。服务器账号必须是已存在且已设置密码的账号；远程用户名填写 `root` 或 `Administrator` 会被拒绝。
+2. 填写连接服务器的 SSH 用户名（默认使用配置中的 `tunnel.user`）、连接服务器的 SSH 端口（默认使用配置中的 `tunnel.server_port`）、远程 Windows 的 SSH 用户名（默认 `sshport`，必须是专用标准用户，最多 20 个字符）、远程 SSH 端口（默认 22）、有效期、备注。服务器账号必须是已存在且已设置密码的账号，服务器端口必须是 sshd 实际监听的端口；远程用户名填写 `root` 或 `Administrator` 会被拒绝。
 3. 提交后，结果页第一步给出在远程 Windows 上执行的 PowerShell 命令和随机密码。在远程 Windows 上以管理员身份打开 PowerShell，粘贴执行一次。命令会创建或更新本地用户、设置不过期密码、启用账户，并加入 Users 组；若同名用户已存在会重置其密码，因此请确认用户名是专用账号。命令包含密码，不要在多人可见的终端或日志中保留。
 4. 确认远程 Windows 的 OpenSSH Server 允许密码认证。若远程 sshd 禁止密码登录，本方案无法建立 Agent 连接；不要为此修改网站或重置远程 SSH 配置，先与远程电脑拥有者确认。
 5. 结果页第二步复制 `ssh -R` 命令，在**远程 Windows** 的 PowerShell 或 cmd 中执行；终端提示的是申请时填写的服务器账号密码，不是上一步生成的远程密码。
@@ -487,7 +487,7 @@ docker compose down
 检查顺序：
 
 1. 远程 Windows 上的 `ssh` 进程是否仍在运行，命令是否包含 `ExitOnForwardFailure=yes`。
-2. 宿主机 `sshd -T` 是否显示 `gatewayports clientspecified` 和 `allowtcpforwarding remote`；如果全局配置了 `AllowUsers`/`AllowGroups`，确认申请时填写的服务器账号被允许。
+2. 宿主机 `sshd -T` 是否显示 `gatewayports clientspecified` 和 `allowtcpforwarding remote`；申请时填写的服务器 SSH 端口是否为 sshd 实际监听端口；如果全局配置了 `AllowUsers`/`AllowGroups`，确认申请时填写的服务器账号被允许。
 3. `/etc/ssh/sshport-tunnel.conf` 的 `Match User` 是否包含申请时填写的服务器账号，以及当前策略地址和端口对应的 `PermitListen`；改过策略或账号但没重新生成、没 reload 是常见原因。
 4. 申请时填写的服务器账号是否已设置密码，`PasswordAuthentication` 是否在 Match 中启用；密码错误会直接认证失败。
 5. 远程 Windows 的 OpenSSH Server 是否允许密码认证，本地账号是否启用或锁定；在远程 Windows 的 PowerShell 中检查 `Get-Content C:\ProgramData\ssh\sshd_config | Select-String PasswordAuthentication`、`Get-Service sshd`、`Get-LocalUser -Name <远程用户>`，必要时查看 `OpenSSH/Operational` 事件日志。
@@ -547,7 +547,7 @@ docker compose exec sshport python /app/docker/healthcheck.py
 - [ ] 所有允许申请使用的服务器账号都只使用密码认证、不能 shell、只能远程转发；密码独立且足够强。
 - [ ] `/etc/ssh/sshport-tunnel.conf` 的 `Match User` 使用 `MaxSessions 0`、`PermitTTY no`、`ForceCommand /bin/false`，并按策略生成 `PermitListen`；策略或账号变更后重新生成并 reload。
 - [ ] 远程 Windows 使用申请页创建的本地标准用户（不是 Administrator，且不在 Administrators 组）；随机密码不写入日志或持久化文件。
-- [ ] 服务器 `tunnel` 密码未写入 `config.toml`、未提交 Git、未与网站访问密钥复用。
+- [ ] 各服务器账号密码未写入 `config.toml`、未提交 Git、未与网站访问密钥复用。
 - [ ] 端口范围专用，启动孤儿清理不会命中其他服务。
 - [ ] Docker 管理权限仅授予可信管理员；不使用 `privileged` 或 Docker socket 挂载。
 - [ ] 定期更新基础镜像和 Python 依赖，重建容器。
@@ -586,7 +586,7 @@ docker compose down
 | --- | --- |
 | 未登录拦截 | 清除 cookie 后访问 `/apply`、`/admin`，应 303 到 `/login`；API 返回 401 |
 | 密钥配置生效 | 修改 `access.keys` 并 `docker compose restart`，旧密钥失效、新密钥可登录 |
-| 申请返回命令 | 登录后申请，页面显示端口、`ssh -R` 命令、远程用户创建命令和 Agent 提示词；自定义服务器用户名同时生效 |
+| 申请返回命令 | 登录后申请，页面显示端口、`ssh -R` 命令、远程用户创建命令和 Agent 提示词；自定义服务器用户名和 SSH 端口同时生效 |
 | 远程用户创建 | 在远程 Windows 的管理员 PowerShell 执行结果页第一步命令，`Get-LocalUser -Name sshport` 显示 Enabled，`Get-LocalGroupMember -Group Users` 包含该用户，密码为页面显示值 |
 | 密码认证生效 | 服务器 `ssh -R` 终端提示输入申请时填写的服务器账号密码；Agent 连接远程 Windows 时使用生成的远程密码 |
 | 远程执行后监听 | 在另一台机器执行命令，宿主机 `ss -ltnp` 看到对应地址和端口 |

@@ -119,6 +119,7 @@ class TunnelRecord:
     remote_user: str
     remote_port: int
     server_user: str
+    server_port: int
     remote_password: str = field(repr=False)
     note: str
     source: str

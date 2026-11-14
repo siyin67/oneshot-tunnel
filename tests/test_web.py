@@ -14,6 +14,7 @@ CSRF_RE = re.compile(r'name="csrf_token" value="([^"]+)"')
 TUNNEL_RE = re.compile(r'data-tunnel-id="([^"]+)"')
 PASSWORD_RE = re.compile(r'id="remote-password">([^<]+)<')
 SSH_COMMAND_RE = re.compile(r'id="ssh-command"><code>(.*?)</code>', re.DOTALL)
+SERVER_PORT_INPUT_RE = re.compile(r'id="server_port".*?value="([^"]+)"', re.DOTALL)
 
 
 @pytest.fixture
@@ -98,6 +99,8 @@ def test_login_sets_cookie_and_apply_returns_command_prompt(web):
     assert 'value="sshport"' in response.text
     assert 'name="server_user"' in response.text
     assert 'value="tunnel"' in response.text
+    assert 'name="server_port"' in response.text
+    assert SERVER_PORT_INPUT_RE.search(response.text).group(1) == "22"
     assert "不能填写 root" in response.text
     csrf = CSRF_RE.search(response.text).group(1)
 
@@ -108,6 +111,7 @@ def test_login_sets_cookie_and_apply_returns_command_prompt(web):
             "remote_user": "sshport",
             "remote_port": "2222",
             "server_user": "ops",
+            "server_port": "2222",
             "ttl_seconds": "60",
             "note": "web-smoke",
         },
@@ -120,9 +124,10 @@ def test_login_sets_cookie_and_apply_returns_command_prompt(web):
     assert "data-tunnel-id=" in body
     assert "data-poll-seconds=\"5\"" in body
     assert "服务器端口" in body
-    assert "隧道服务器的 22 端口可达" in body
+    assert "隧道服务器的 2222 端口可达" in body
     assert "服务器账号 ops 的密码" in body
     assert "ops@tunnel.example.com" in body
+    assert "-p 2222 " in body
     assert "不探测远程电脑" in body
     assert "第一步：在远程 Windows 创建登录用户" in body
     assert "第二步：在远程 Windows 建立隧道" in body
@@ -151,6 +156,8 @@ def test_login_sets_cookie_and_apply_returns_command_prompt(web):
             "csrf_token": csrf,
             "remote_user": "sshport",
             "remote_port": "2222",
+            "server_user": "ops",
+            "server_port": "2222",
             "ttl_seconds": "60",
             "note": "again",
         },
@@ -236,6 +243,21 @@ def test_apply_validation_and_csrf(web):
     assert response.status_code == 400
     assert "连接服务器的 SSH 用户名不能为空" in response.text
 
+    response = client.post(
+        "/apply",
+        data={
+            "csrf_token": csrf,
+            "remote_user": "sshport",
+            "remote_port": "22",
+            "server_user": "tunnel",
+            "server_port": "not-a-port",
+            "ttl_seconds": "60",
+            "note": "",
+        },
+    )
+    assert response.status_code == 400
+    assert "连接服务器的 SSH 端口必须是整数" in response.text
+
 
 def test_api_create_status_and_delete(web):
     client, service, ports, cleaner = web
@@ -248,6 +270,7 @@ def test_api_create_status_and_delete(web):
             "remote_user": "sshport",
             "remote_port": 22,
             "server_user": "ops",
+            "server_port": 2222,
             "ttl_seconds": 60,
             "note": "api",
         },
@@ -259,7 +282,9 @@ def test_api_create_status_and_delete(web):
     port = payload["port"]
     assert payload["status"] == "pending"
     assert payload["server_user"] == "ops"
+    assert payload["server_port"] == 2222
     assert "ops@tunnel.example.com" in payload["ssh_command"]
+    assert "-p 2222 " in payload["ssh_command"]
     assert payload["listen_address"] == "127.0.0.1"
     assert len(payload["remote_password"]) == 24
     assert "New-LocalUser -Name $name" in payload["remote_setup_command"]
@@ -279,6 +304,18 @@ def test_api_create_status_and_delete(web):
     )
     assert response.status_code == 400
     assert "server_user" in response.json()["error"]["fields"]
+
+    response = client.post(
+        "/api/tunnels",
+        json={
+            "remote_user": "sshport",
+            "server_port": "2222",
+            "ttl_seconds": 60,
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 400
+    assert "server_port" in response.json()["error"]["fields"]
 
     response = client.post(
         "/api/tunnels",
@@ -339,6 +376,7 @@ def test_admin_policy_and_confirmed_delete(web):
     assert "全部地址" in admin.text
     assert "风险" in admin.text
     assert 'name="confirm" value="yes"' in admin.text
+    assert "服务器账号 tunnel · SSH 端口 22" in admin.text
 
     response = client.post(
         "/admin/policy",
