@@ -51,8 +51,10 @@ def generate_remote_password() -> str:
             secrets.choice(_PASSWORD_ALPHABET)
             for _ in range(_REMOTE_PASSWORD_LENGTH)
         )
-        if any(char.isalpha() for char in candidate) and any(
-            char.isdigit() for char in candidate
+        if (
+            any(char.islower() for char in candidate)
+            and any(char.isupper() for char in candidate)
+            and any(char.isdigit() for char in candidate)
         ):
             return candidate
 

@@ -83,7 +83,8 @@ def test_password_auth_and_remote_setup_command(service: TunnelService, caplog):
 
     assert len(password) == 24
     assert password.isalnum()
-    assert any(char.isalpha() for char in password)
+    assert any(char.islower() for char in password)
+    assert any(char.isupper() for char in password)
     assert any(char.isdigit() for char in password)
     assert payload["remote_password"] == password
 
