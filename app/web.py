@@ -29,6 +29,7 @@ from .host import (
 )
 from .logging_setup import configure_logging
 from .models import (
+    DEFAULT_REMOTE_USER,
     AppError,
     CleanupError,
     HostProbeError,
@@ -319,7 +320,7 @@ def create_app(
     ) -> dict[str, Any]:
         context = base_context(request, session)
         values = values or {
-            "remote_user": "root",
+            "remote_user": DEFAULT_REMOTE_USER,
             "remote_port": "22",
             "ttl_seconds": str(config.tunnel.default_ttl_seconds),
             "note": "",
@@ -343,6 +344,8 @@ def create_app(
                     for seconds in config.tunnel.allowed_ttl_seconds
                 ],
                 "default_remote_port": 22,
+                "default_remote_user": DEFAULT_REMOTE_USER,
+                "config_tunnel_server_user": config.tunnel.user,
                 "tunnel_server_port": config.tunnel.server_port,
                 "tunnel_server_host": config.tunnel.server_host,
             }
@@ -684,7 +687,7 @@ def create_app(
                 status_code=400,
             )
         fields: dict[str, str] = {}
-        remote_user = body.get("remote_user", "root")
+        remote_user = body.get("remote_user", DEFAULT_REMOTE_USER)
         if not isinstance(remote_user, str):
             fields["remote_user"] = "远程 SSH 用户名必须是字符串"
             remote_user = ""

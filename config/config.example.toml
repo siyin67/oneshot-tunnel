@@ -27,6 +27,7 @@ lockout_seconds = 900
 
 [tunnel]
 # 远程电脑连接隧道服务器使用的受限 SSH 用户。
+# 该账号需在宿主机用 passwd 设置独立的 SSH 密码；密码不写入本配置。
 user = "tunnel"
 # 隧道服务器地址，写入 ssh -R 命令。
 server_host = "tunnel.example.com"

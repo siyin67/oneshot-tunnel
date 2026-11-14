@@ -12,6 +12,8 @@ from app.web import create_app
 
 CSRF_RE = re.compile(r'name="csrf_token" value="([^"]+)"')
 TUNNEL_RE = re.compile(r'data-tunnel-id="([^"]+)"')
+PASSWORD_RE = re.compile(r'id="remote-password">([^<]+)<')
+SSH_COMMAND_RE = re.compile(r'id="ssh-command"><code>(.*?)</code>', re.DOTALL)
 
 
 @pytest.fixture
@@ -93,13 +95,15 @@ def test_login_sets_cookie_and_apply_returns_command_prompt(web):
     login(client)
     response = client.get("/apply")
     assert response.status_code == 200
+    assert 'value="sshport"' in response.text
+    assert "不能填写 root" in response.text
     csrf = CSRF_RE.search(response.text).group(1)
 
     response = client.post(
         "/apply",
         data={
             "csrf_token": csrf,
-            "remote_user": "root",
+            "remote_user": "sshport",
             "remote_port": "2222",
             "ttl_seconds": "60",
             "note": "web-smoke",
@@ -115,6 +119,17 @@ def test_login_sets_cookie_and_apply_returns_command_prompt(web):
     assert "服务器端口" in body
     assert "隧道服务器的 22 端口可达" in body
     assert "不探测远程电脑" in body
+    assert "第一步：在远程电脑创建登录用户" in body
+    assert "第二步：在远程电脑建立隧道" in body
+    assert "useradd --create-home --shell /bin/bash sshport" in body
+    assert "chpasswd" in body
+    assert "远程电脑登录密码：" in body
+    password = PASSWORD_RE.search(body)
+    assert password, "result page has no generated remote password"
+    assert len(password.group(1)) == 24
+    ssh_command = SSH_COMMAND_RE.search(body)
+    assert ssh_command, "result page has no ssh command"
+    assert password.group(1) not in ssh_command.group(1)
 
     tunnel_id = TUNNEL_RE.search(body).group(1)
     status = client.get(f"/api/tunnels/{tunnel_id}/status").json()
@@ -126,7 +141,7 @@ def test_login_sets_cookie_and_apply_returns_command_prompt(web):
         "/apply",
         data={
             "csrf_token": csrf,
-            "remote_user": "root",
+            "remote_user": "sshport",
             "remote_port": "2222",
             "ttl_seconds": "60",
             "note": "again",
@@ -153,7 +168,7 @@ def test_apply_validation_and_csrf(web):
 
     response = client.post(
         "/apply",
-        data={"csrf_token": "", "remote_user": "root", "ttl_seconds": "60"},
+        data={"csrf_token": "", "remote_user": "sshport", "ttl_seconds": "60"},
     )
     assert response.status_code == 403
 
@@ -186,6 +201,19 @@ def test_apply_validation_and_csrf(web):
     assert "远程 SSH 用户名不能为空" in response.text
     assert "所选有效期不在允许的档位中" in response.text
 
+    response = client.post(
+        "/apply",
+        data={
+            "csrf_token": csrf,
+            "remote_user": "root",
+            "remote_port": "22",
+            "ttl_seconds": "60",
+            "note": "",
+        },
+    )
+    assert response.status_code == 400
+    assert "不能使用 root" in response.text
+
 
 def test_api_create_status_and_delete(web):
     client, service, ports, cleaner = web
@@ -195,7 +223,7 @@ def test_api_create_status_and_delete(web):
     response = client.post(
         "/api/tunnels",
         json={
-            "remote_user": "root",
+            "remote_user": "sshport",
             "remote_port": 22,
             "ttl_seconds": 60,
             "note": "api",
@@ -208,10 +236,17 @@ def test_api_create_status_and_delete(web):
     port = payload["port"]
     assert payload["status"] == "pending"
     assert payload["listen_address"] == "127.0.0.1"
+    assert len(payload["remote_password"]) == 24
+    assert "useradd --create-home --shell /bin/bash sshport" in payload[
+        "remote_setup_command"
+    ]
+    assert payload["remote_password"] not in payload["ssh_command"]
+    assert "PreferredAuthentications=password" in payload["ssh_command"]
+    assert payload["remote_password"] in payload["agent_prompt"]
 
     response = client.post(
         "/api/tunnels",
-        json={"remote_user": "root", "ttl_seconds": 60},
+        json={"remote_user": "sshport", "ttl_seconds": 60},
         headers={"X-CSRF-Token": "wrong"},
     )
     assert response.status_code == 403
@@ -247,7 +282,7 @@ def test_admin_policy_and_confirmed_delete(web):
     # 通过服务层使用不同来源创建旧隧道，避开 Web 同源去重，并保留旧策略。
     original = asyncio.run(
         service.create_tunnel(
-            remote_user="root",
+            remote_user="sshport",
             remote_port=22,
             ttl_seconds=60,
             note="before-policy",
@@ -289,7 +324,7 @@ def test_admin_policy_and_confirmed_delete(web):
     # 新申请使用新策略；旧记录保持原策略。
     created = client.post(
         "/api/tunnels",
-        json={"remote_user": "root", "ttl_seconds": 60, "note": "after-policy"},
+        json={"remote_user": "sshport", "ttl_seconds": 60, "note": "after-policy"},
         headers={"X-CSRF-Token": csrf},
     ).json()
     assert created["listen_address"] == "10.0.0.5"

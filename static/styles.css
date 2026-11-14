@@ -573,6 +573,25 @@ select:focus-visible {
   color: var(--danger);
 }
 
+.password-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.7rem;
+}
+
+.password-row .meta-label {
+  margin: 0;
+}
+
+.password-row code {
+  padding: 0.25rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: #f8fafb;
+}
+
 .policy-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

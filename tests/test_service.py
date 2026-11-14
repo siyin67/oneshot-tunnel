@@ -37,7 +37,7 @@ class RaisingPortInspector:
 
 def create(service: TunnelService, **overrides):
     values = {
-        "remote_user": "root",
+        "remote_user": "sshport",
         "remote_port": 22,
         "ttl_seconds": 60,
         "note": "测试备注",
@@ -62,14 +62,56 @@ def test_command_and_prompt_contain_required_contract(service: TunnelService):
     prompt = payload["agent_prompt"]
     assert "服务器连接地址：127.0.0.1" in prompt
     assert "服务器端口：32000" in prompt
-    assert "远程电脑登录用户名：root" in prompt
-    assert "仅使用服务器拥有者指定的 SSH 私钥" in prompt
-    assert "禁止使用密码认证" in prompt
+    assert "远程电脑登录用户名：sshport" in prompt
+    assert "本地 Agent 登录远程电脑使用账号密码，不使用私钥认证" in prompt
+    assert "远程电脑登录密码：" in prompt
     assert "不写入 authorized_keys" in prompt
-    assert "不缓存端口和命令" in prompt
+    assert "不缓存密码、端口和命令" in prompt
     assert "不要自行重建隧道" in prompt
     assert "test-access-key" not in prompt
     assert payload["remaining_seconds"] == 60
+
+
+def test_password_auth_and_remote_setup_command(service: TunnelService, caplog):
+    caplog.set_level(logging.INFO, logger="app.service")
+    application = create(service)
+    payload = service.application_payload(application)
+    password = application.record.remote_password
+
+    assert len(password) == 24
+    assert password.isalnum()
+    assert any(char.isalpha() for char in password)
+    assert any(char.isdigit() for char in password)
+    assert payload["remote_password"] == password
+
+    command = payload["ssh_command"]
+    assert "-o PreferredAuthentications=password" in command
+    assert "-o PubkeyAuthentication=no" in command
+    assert "-o NumberOfPasswordPrompts=1" in command
+    assert "IdentitiesOnly" not in command
+    assert password not in command
+
+    setup = payload["remote_setup_command"]
+    assert "useradd --create-home --shell /bin/bash sshport" in setup
+    assert f"'sshport:{password}'" in setup
+    assert "chpasswd" in setup
+    assert "sudo" in setup
+
+    prompt = payload["agent_prompt"]
+    assert f"远程电脑登录密码：{password}" in prompt
+    assert "PreferredAuthentications=password" in prompt
+    assert "不使用私钥认证" in prompt
+    assert "不要把密码写入脚本" in prompt
+
+    assert password not in caplog.text
+    assert "sshport" in caplog.text
+
+
+def test_dedupe_keeps_the_same_remote_password(service: TunnelService):
+    first = create(service)
+    again = create(service)
+    assert again.reused is True
+    assert again.record.remote_password == first.record.remote_password
 
 
 def test_allocation_skips_listening_and_in_memory_ports(service: TunnelService, ports):
@@ -109,6 +151,10 @@ def test_request_validation(service: TunnelService):
     with pytest.raises(ValidationError) as exc:
         create(service, remote_user="bad user")
     assert "remote_user" in exc.value.fields
+
+    with pytest.raises(ValidationError) as exc:
+        create(service, remote_user="root")
+    assert "不能使用 root" in exc.value.fields["remote_user"]
 
     with pytest.raises(ValidationError) as exc:
         create(service, remote_port=70000)

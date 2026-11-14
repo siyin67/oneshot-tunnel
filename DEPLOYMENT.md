@@ -34,7 +34,8 @@
 - OpenSSH Server 7.6 或更新版本（`AllowTcpForwarding remote` 需要 7.6+）。
 - Docker Engine 与 Docker Compose v2。必须使用 Linux 容器；Docker Desktop 的 host network 行为与 Linux 不同，不作为生产部署方式。
 - 宿主机安装 `iproute2`（提供 `ip` 和 `ss`）、`sudo`、`tzdata`。镜像内已包含这些包。
-- 一个专用的 tunnel 用户（示例为 `tunnel`）和一个专用 SSH 密钥。
+- 一个专用的 tunnel 用户（示例为 `tunnel`），并为它设置独立的登录密码。
+- 远程电脑为 Linux 或类 Unix 系统，具备 `useradd`、`chpasswd`、`sudo` 或 root 权限，并允许 SSH 密码认证；申请页会生成专用非 root 用户创建命令和随机密码，Windows 远程主机不适用当前创建命令。
 - 一个专用端口范围（示例为 30000-30099），不要与网站端口、宿主机其他服务重叠。
 
 ## 3. 宿主机 sshd 配置
@@ -77,82 +78,102 @@ sudo sshd -T | grep -E 'allowtcpforwarding|gatewayports|clientalive'
 
 ```bash
 sudo useradd --system --create-home --shell /usr/sbin/nologin tunnel
-sudo install -d -m 0700 -o tunnel -g tunnel /home/tunnel/.ssh
+sudo passwd tunnel
 ```
 
 说明：
 
 - `nologin` 防止交互式 shell；`ssh -N` 不请求 shell，端口转发仍可工作。
-- 不要给该用户 sudo 权限。
-- 不要把该用户加入 docker 组。
+- `passwd` 设置的是服务器 `tunnel` 账号的 SSH 登录密码。它不会写入配置文件，也不会写进网站生成的命令；执行 `ssh -R` 时由终端提示输入。
+- 该密码必须独立、足够强，不能与网站访问密钥或其他账号密码相同。
+- 不要给该用户 sudo 权限，也不要把它加入 docker 组。
+- 不需要为这个账号安装公钥；本方案只使用密码认证。
 
-在 `sshd_config` 中按用户收紧权限，放在文件末尾：
+`sshd` 侧的密码认证、禁止 shell 和监听限制统一放在 3.3 生成的 `Match User tunnel` 块中。不要在本节手工追加另一份 `Match`，否则两个 `Match` 块和 `Include` 的顺序容易互相干扰。
 
-```sshconfig
-Match User tunnel
-    PasswordAuthentication no
-    KbdInteractiveAuthentication no
-    PubkeyAuthentication yes
-    AuthenticationMethods publickey
-    PermitTTY no
-    ForceCommand /bin/false
-    AllowAgentForwarding no
-    AllowTcpForwarding remote
-    X11Forwarding no
-    PermitUserEnvironment no
-    ClientAliveInterval 15
-    ClientAliveCountMax 3
-```
+需要理解的限制：
 
-`Match` 块中的 `AllowTcpForwarding remote` 是第二道保险；`ForceCommand /bin/false` 阻止获得 shell；真正限制可监听地址和端口的是下一节的 `permitlisten`。
+- 只允许密码认证，不接受公钥；`PasswordAuthentication yes` 与 `AuthenticationMethods password` 配合。
+- `MaxSessions 0` 禁止 shell、登录和 subsystem 会话，但仍允许端口转发；`ForceCommand` 和 `PermitTTY no` 是额外防线。
+- 真正限制可监听地址和端口的是下一节的 `PermitListen`。
+- 如果 `tunnel.user` 不是 `tunnel`，3.3 的 `Match User` 必须同步改成实际用户名。
 
-### 3.3 生成并安装受限密钥
+### 3.3 配置密码认证与 PermitListen
 
-在保存私钥的机器上生成专用密钥，不要复用个人登录密钥：
+服务器 `tunnel` 账号使用密码认证，因此不能再用 `authorized_keys` 里的 `permitlisten` 限制监听地址：那个选项只在公钥认证时读取。密码认证下，监听地址限制必须写在 `sshd_config` 的 `PermitListen` 中。
 
-```bash
-ssh-keygen -t ed25519 -a 100 -f ./sshport-tunnel-key -C sshport-tunnel
-```
+`PermitListen` 只接受单个端口（`port`）或 `主机:端口`（`host:port`），不接受 `30000-30099` 这样的范围；多个权限用**空白**分隔，不能用逗号。下面根据当前策略生成一个独立的配置文件，并把它 Include 到主配置末尾。不要把含 `Match` 的文件放进 Debian/Ubuntu 的 `sshd_config.d/`，因为该目录通常在 `sshd_config` 开头被 Include，`Match` 块可能把后面的全局配置也吞进去。
 
-把公钥写入 `/home/tunnel/.ssh/authorized_keys`，并按当前监听策略设置 `permitlisten`。
-
-OpenSSH 的 `permitlisten` 只接受单个端口（`port`）或 `主机:端口`（`host:port`），端口部分可以用 `*` 通配，但不接受 `30000-30099` 这样的范围。因此需要为端口范围内的每个端口生成一个 `permitlisten` 选项：
+脚本假设配置中的 `tunnel.user` 为 `tunnel`、端口范围为 `30000-30099`。如果改过这两项，必须同步修改脚本中的 `Match User` 和 `seq` 范围；`BIND` 按当前监听策略填写。
 
 ```bash
 # 仅回环策略；all 模式改为 0.0.0.0；specific 模式改为实际网卡 IP。
 BIND=127.0.0.1
-START=30000
-END=30099
-KEY="$(cat ./sshport-tunnel-key.pub)"
-OPTS='restrict,port-forwarding,no-pty,command="/bin/false"'
-for port in $(seq "$START" "$END"); do
-  OPTS="${OPTS},permitlisten=\"${BIND}:${port}\""
+
+# IPv6 地址必须写成 [addr]:port，不能写成 ::1:30000。
+case "$BIND" in
+  *:*) BIND_SPEC="[$BIND]" ;;
+  *)   BIND_SPEC="$BIND" ;;
+esac
+
+LISTEN=""
+for port in $(seq 30000 30099); do
+  LISTEN="$LISTEN $BIND_SPEC:$port"
 done
-printf '%s %s\n' "$OPTS" "$KEY" | sudo tee /home/tunnel/.ssh/authorized_keys >/dev/null
+
+sudo tee /etc/ssh/sshport-tunnel.conf >/dev/null <<EOF
+Match User tunnel
+    GatewayPorts clientspecified
+    PasswordAuthentication yes
+    PubkeyAuthentication no
+    KbdInteractiveAuthentication no
+    AuthenticationMethods password
+    PermitTTY no
+    MaxSessions 0
+    ForceCommand /bin/false
+    AllowAgentForwarding no
+    AllowTcpForwarding remote
+    X11Forwarding no
+    PermitListen$LISTEN
+    ClientAliveInterval 15
+    ClientAliveCountMax 3
+EOF
+
+sudo chmod 600 /etc/ssh/sshport-tunnel.conf
+
+# 只在主配置末尾添加一次 Include。
+if ! sudo grep -qxF 'Include /etc/ssh/sshport-tunnel.conf' /etc/ssh/sshd_config; then
+  echo 'Include /etc/ssh/sshport-tunnel.conf' | sudo tee -a /etc/ssh/sshd_config >/dev/null
+fi
+
+sudo sshd -t
+sudo systemctl reload sshd
 ```
 
-生成后设置权限：
+上面的 `LISTEN` 会展开成类似 `127.0.0.1:30000 127.0.0.1:30001 ... 127.0.0.1:30099` 的空白分隔列表，最终一行是 `PermitListen 127.0.0.1:30000 ...`；如果 `BIND` 是 IPv6，则每项形如 `[::1]:30000`。100 个端口约 2 KB，仍在可控范围内；不要把端口范围设得过大。
+
+确认生效：
 
 ```bash
-sudo chown -R tunnel:tunnel /home/tunnel/.ssh
-sudo chmod 700 /home/tunnel/.ssh
-sudo chmod 600 /home/tunnel/.ssh/authorized_keys
+sudo sshd -T -C user=tunnel,host=localhost,addr=127.0.0.1 \
+  | grep -E '^(passwordauthentication|pubkeyauthentication|maxsessions|permittty|forcecommand|allowtcpforwarding|gatewayports|permitlisten)'
 ```
 
-说明：
+策略变更后：
 
-- 上面的脚本为 100 个端口生成 100 个 `permitlisten`。OpenSSH 的 `SSH_AUTHOPT_PERMIT_MAX` 为 4096，100 个在限制内；但选项越多，`authorized_keys` 行越长、认证处理成本越高。不要把端口范围设得过大，也不要用 `*` 把限制放宽到所有端口。
-- `restrict` 会关闭端口转发、PTY、agent 转发、X11 等；后面的 `port-forwarding` 只重新打开端口转发。`no-pty` 和 `command="/bin/false"` 用来阻止通过该密钥执行 shell 或命令。`Match User tunnel` 中的 `ForceCommand /bin/false` 是第二道保险。
-- `AllowTcpForwarding remote` 再禁止本地转发和动态转发。
-- `permitlisten` 是 `authorized_keys` 中的静态限制。管理页切换监听策略后，必须重新执行上面的脚本生成新的 `authorized_keys`；新连接重新认证时生效，已建立的隧道不受影响。否则新策略生成的命令会被 sshd 拒绝。
-- 指定地址模式下，`BIND` 必须是 `ip -o addr show` 中真实存在的地址；地址变化后要重新生成。
+- 管理页切换监听策略只影响新申请的隧道。必须用新的 `BIND` 重新执行上面的生成脚本并 reload sshd，否则新地址或新端口会被 `PermitListen` 拒绝。
+- 重新生成会整体替换 `/etc/ssh/sshport-tunnel.conf`，不要手工拼接旧内容。
+- `specific` 模式的 `BIND` 必须是 `ip -o addr show` 中真实存在的单个地址，不能写 CIDR；地址变化后要重新生成。
+- 已建立的隧道保持原绑定地址，不需要也不会被重载中断。
 
 验证远程转发：
 
 ```bash
-# 在远程电脑执行网站生成的命令（下面只是示例）
+# 在远程电脑执行网站生成的命令（下面只是示例）；终端会提示输入 tunnel 的密码。
 ssh -N -T -p 22 \
   -o ExitOnForwardFailure=yes \
+  -o PreferredAuthentications=password \
+  -o PubkeyAuthentication=no \
   -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
   -R 127.0.0.1:30000:localhost:22 \
   tunnel@tunnel.example.com
@@ -167,6 +188,8 @@ ss -ltnp 'sport = :30000'
 ssh -tt tunnel@tunnel.example.com
 # 应被拒绝或立即退出，不能获得交互式 shell
 ```
+
+远程电脑上的登录用户由申请页生成，不在这台宿主机上创建；其密码也是申请页随机生成并展示的。远程电脑的 sshd 必须允许密码认证，否则本地 Agent 无法通过隧道登录。
 
 ### 3.4 防火墙和地址
 
@@ -190,7 +213,7 @@ ssh -tt tunnel@tunnel.example.com
 - `all` 模式生成 Agent 提示词时绝不能使用 `0.0.0.0`；服务会使用 `tunnel.public_host`，例如公网 DNS 名称或可路由 IP。
 - `specific` 只接受单个 IP，不接受 CIDR。管理页保存时，后端执行 `ip -o addr show` 校验该 IP 在当前宿主机网卡上；不存在则拒绝保存。
 - 管理页修改策略只影响之后新申请的隧道；已建立隧道保留申请时的绑定地址。
-- 修改策略后还要同步更新 `authorized_keys` 的 `permitlisten`，原因见 3.3。
+- 修改策略后还要同步更新 `/etc/ssh/sshport-tunnel.conf` 中 `Match User tunnel` 的 `PermitListen` 列表，并 reload sshd，原因见 3.3。
 
 虚拟网卡示例：
 
@@ -251,7 +274,7 @@ pid: host
 | --- | --- | --- | --- |
 | `./config` | `/app/config` | 只读 | `config.toml`，含访问密钥 |
 | `./data` | `/app/data` | 读写 | 监听策略快照 `policy.json` |
-| `./keys` | `/app/keys` | 只读 | 运维放置 Agent 私钥等材料；服务本身不读取 |
+| `./keys` | `/app/keys` | 只读 | 可选：运维材料；当前密码认证方案不使用密钥，服务本身不读取 |
 | `./logs` | `/app/logs` | 读写 | 可选日志收集；应用日志仍写 stdout |
 
 配置不打进镜像。`.dockerignore` 排除了 `config/`、`data/`、`logs/`、`keys/` 和测试文件。
@@ -351,7 +374,7 @@ docker compose down
 
 | 字段 | 类型 | 说明 | 约束 |
 | --- | --- | --- | --- |
-| `user` | 字符串 | 远程电脑连接服务器使用的受限 SSH 用户 | 合法用户名 |
+| `user` | 字符串 | 远程电脑连接服务器使用的受限 SSH 用户 | 合法用户名；该账号需在宿主机设置密码，密码不写入本配置 |
 | `server_host` | 字符串 | 隧道服务器地址，写入 `ssh -R` 命令 | 主机名或 IP，不带端口/协议 |
 | `server_port` | 整数 | 隧道服务器 SSH 端口 | 1-65535，且不在隧道端口范围内 |
 | `port_start` / `port_end` | 整数 | 宿主机可分配的闭区间端口范围 | 1-65535，start <= end |
@@ -365,6 +388,8 @@ docker compose down
 | `public_host` | 字符串 | all 模式给 Agent 的对外地址 | all 时必填；不能是 `0.0.0.0`/`::`，不能带端口 |
 | `keepalive_interval_seconds` | 整数 | `ServerAliveInterval` | 1-3600 |
 | `keepalive_count_max` | 整数 | `ServerAliveCountMax` | 正整数 |
+
+`tunnel.user` 只是服务器侧的 SSH 账号名。该账号的密码由宿主机管理员用 `passwd` 设置，不在配置文件中，也不由网站生成或保存。远程电脑上被操作的账号则是另一回事：它由申请页生成，用户名默认 `sshport`，密码随机生成并显示在结果页。
 
 `listen_mode` 是首次启动的初始值。管理页保存过策略后，`data/policy.json` 优先；删除该文件可恢复配置文件值。
 
@@ -411,10 +436,14 @@ docker compose down
 ### 8.1 申请隧道
 
 1. 登录后打开申请页。
-2. 填写远程电脑 SSH 用户名（默认 `root`）、远程 SSH 端口（默认 22）、有效期、备注。
-3. 提交后复制 `ssh -R` 命令，在远程电脑执行。
-4. 复制 Agent 提示词给本地 Agent。
-5. 观察状态从“已分配，待连接”变为“已建立”。
+2. 填写远程电脑 SSH 用户名（默认 `sshport`，必须是非 root 专用用户）、远程 SSH 端口（默认 22）、有效期、备注。填写 `root` 会被拒绝。
+3. 提交后，结果页第一步给出“创建远程用户”命令和随机密码。把命令复制到远程电脑，用 root 或 sudo 执行一次。若同名用户不存在会创建；若已存在，会重置其密码，因此请确认用户名是专用账号。命令包含密码，不要在多人可见的终端或日志中保留。
+4. 确认远程电脑的 sshd 允许密码认证。若远程 sshd 禁止密码登录，本方案无法建立 Agent 连接；不要为此修改网站或重置远程 SSH 配置，先与远程电脑拥有者确认。
+5. 结果页第二步复制 `ssh -R` 命令，在**远程电脑**执行；终端提示的是服务器 `tunnel` 用户的密码，不是上一步生成的远程密码。
+6. 把第三步的 Agent 提示词复制给本地 Agent。Agent 使用远程用户名和随机密码登录远程电脑。
+7. 观察状态从“已分配，待连接”变为“已建立”。
+
+远程用户密码只在申请结果页、Agent 提示词和本次 API 响应中出现；服务不把它写入日志或策略快照。隧道记录在内存中，服务重启后密码和记录一起丢失。
 
 状态只反映宿主机端口监听情况，不代表远程 SSH 服务一定可用。
 
@@ -441,11 +470,13 @@ docker compose down
 检查顺序：
 
 1. 远程电脑上的 `ssh` 进程是否仍在运行，命令是否包含 `ExitOnForwardFailure=yes`。
-2. 宿主机 `sshd -T` 是否显示 `gatewayports clientspecified` 和 `allowtcpforwarding remote`。
-3. `authorized_keys` 的 `permitlisten` 是否允许当前策略的地址和端口。
-4. 端口是否在 `tunnel.port_start..port_end` 内。
-5. 宿主机防火墙/云安全组是否放行（all/specific 模式）。
-6. `journalctl -u sshd` 或 `/var/log/auth.log` 中是否有 `remote port forwarding failed`、`administratively prohibited`。
+2. 宿主机 `sshd -T` 是否显示 `gatewayports clientspecified` 和 `allowtcpforwarding remote`；如果全局配置了 `AllowUsers`/`AllowGroups`，确认 `tunnel` 被允许。
+3. `/etc/ssh/sshport-tunnel.conf` 的 `Match User tunnel` 是否包含当前策略地址和端口对应的 `PermitListen`；改过策略但没重新生成或没 reload 是常见原因。
+4. 服务器 `tunnel` 用户是否已设置密码，`PasswordAuthentication` 是否在 Match 中启用；密码错误会直接认证失败。
+5. 远程电脑的 sshd 是否允许密码认证，远程账号是否被锁定；在远程电脑检查 `sshd -T | grep passwordauthentication` 和 `passwd -S <远程用户>`。
+6. 端口是否在 `tunnel.port_start..port_end` 内。
+7. 宿主机防火墙/云安全组是否放行（all/specific 模式）。
+8. `journalctl -u sshd` 或 `/var/log/auth.log` 中是否有 `remote port forwarding failed`、`administratively prohibited`。
 
 ### 9.2 全部地址模式仍只能本机连接
 
@@ -496,8 +527,10 @@ docker compose exec sshport python /app/docker/healthcheck.py
 - [ ] `config.toml` 权限为 0600，属主为容器用户；配置目录不对普通用户开放。
 - [ ] 网站前有 HTTPS 反向代理，`cookie_secure = true`。
 - [ ] 默认使用 `loopback` 策略；只有明确需要时才使用 `all`，并配置防火墙。
-- [ ] `tunnel` 用户只能公钥认证、不能 shell、只能远程转发。
-- [ ] `authorized_keys` 使用 `restrict,port-forwarding,no-pty,command="/bin/false"`，并为每个端口生成一条 `permitlisten`；策略变更后重新生成。
+- [ ] `tunnel` 用户只使用密码认证、不能 shell、只能远程转发；密码独立且足够强。
+- [ ] `/etc/ssh/sshport-tunnel.conf` 的 `Match User tunnel` 使用 `MaxSessions 0`、`PermitTTY no`、`ForceCommand /bin/false`，并按策略生成 `PermitListen`；策略变更后重新生成并 reload。
+- [ ] 远程电脑使用申请页生成的非 root 专用用户；随机密码不写入日志或持久化文件。
+- [ ] 服务器 `tunnel` 密码未写入 `config.toml`、未提交 Git、未与网站访问密钥复用。
 - [ ] 端口范围专用，启动孤儿清理不会命中其他服务。
 - [ ] Docker 管理权限仅授予可信管理员；不使用 `privileged` 或 Docker socket 挂载。
 - [ ] 定期更新基础镜像和 Python 依赖，重建容器。
@@ -536,7 +569,9 @@ docker compose down
 | --- | --- |
 | 未登录拦截 | 清除 cookie 后访问 `/apply`、`/admin`，应 303 到 `/login`；API 返回 401 |
 | 密钥配置生效 | 修改 `access.keys` 并 `docker compose restart`，旧密钥失效、新密钥可登录 |
-| 申请返回命令 | 登录后申请，页面显示端口、可复制命令、Agent 提示词 |
+| 申请返回命令 | 登录后申请，页面显示端口、`ssh -R` 命令、远程用户创建命令和 Agent 提示词 |
+| 远程用户创建 | 在远程电脑执行结果页第一步命令，`id sshport` 成功，密码为页面显示值 |
+| 密码认证生效 | 服务器 `ssh -R` 终端提示输入 `tunnel` 密码；Agent 连接远程电脑时使用生成的远程密码 |
 | 远程执行后监听 | 在另一台机器执行命令，宿主机 `ss -ltnp` 看到对应地址和端口 |
 | 策略隔离 | 切换策略后新申请使用新绑定地址，旧记录保留原地址 |
 | 指定地址校验 | 管理页填不存在的 IP，返回 400 和“不在宿主机任何网卡上” |

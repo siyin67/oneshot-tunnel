@@ -75,20 +75,39 @@
   </div>
   <p class="status-message" data-status-message role="status" aria-live="polite"></p>
 
+  <section class="copy-section" aria-labelledby="setup-title">
+    <div class="section-heading">
+      <h3 id="setup-title">第一步：在远程电脑创建登录用户</h3>
+      <button class="button button-secondary button-small" type="button"
+              data-copy-target="remote-setup-command" data-copy-feedback="remote-setup-command-feedback">复制创建命令</button>
+    </div>
+    <pre class="code-block" id="remote-setup-command"><code>{{ result.remote_setup_command }}</code></pre>
+    {{ copy_feedback("remote-setup-command") }}
+    <div class="password-row">
+      <span class="meta-label">为远程用户生成的密码</span>
+      <code id="remote-password">{{ result.remote_password }}</code>
+      <button class="button button-secondary button-small" type="button"
+              data-copy-target="remote-password" data-copy-feedback="remote-password-feedback">复制密码</button>
+    </div>
+    {{ copy_feedback("remote-password") }}
+    <p class="field-help">此密码只在本页和 Agent 提示词中出现，不写入日志或策略快照。请按敏感信息处理，不要粘贴到公开位置。</p>
+    <p class="field-help">在远程电脑上执行一次，需要 sudo 或 root 权限。如果同名用户已存在，命令会重置其密码；请确认它是专用账号。远程电脑的 sshd 必须允许密码认证；本页不会修改远程 SSH 配置。</p>
+  </section>
+
   <section class="copy-section" aria-labelledby="command-title">
     <div class="section-heading">
-      <h3 id="command-title">在远程电脑执行的命令</h3>
+      <h3 id="command-title">第二步：在远程电脑建立隧道</h3>
       <button class="button button-secondary button-small" type="button"
               data-copy-target="ssh-command" data-copy-feedback="ssh-command-feedback">复制命令</button>
     </div>
     <pre class="code-block" id="ssh-command"><code>{{ result.ssh_command }}</code></pre>
     {{ copy_feedback("ssh-command") }}
-    <p class="field-help">先确认远程电脑到隧道服务器的 {{ tunnel_server_port }} 端口可达，再执行此命令。不要在本地 Agent 上执行。</p>
+    <p class="field-help">先确认远程电脑到隧道服务器的 {{ tunnel_server_port }} 端口可达，再执行此命令。终端会提示输入服务器隧道用户 {{ config_tunnel_server_user }} 的密码，不是上面生成的远程密码；不要在本地 Agent 上执行。</p>
   </section>
 
   <section class="copy-section" aria-labelledby="prompt-title">
     <div class="section-heading">
-      <h3 id="prompt-title">粘贴给本地 Agent 的提示词</h3>
+      <h3 id="prompt-title">第三步：粘贴给本地 Agent 的提示词</h3>
       <button class="button button-secondary button-small" type="button"
               data-copy-target="agent-prompt" data-copy-feedback="agent-prompt-feedback">复制提示词</button>
     </div>
@@ -135,7 +154,7 @@
       <input id="remote_user" name="remote_user" type="text" value="{{ values.remote_user }}"
              required maxlength="64" spellcheck="false"
              {% if errors.remote_user %}aria-invalid="true" aria-describedby="remote_user-error"{% else %}aria-describedby="remote-user-help"{% endif %}>
-      <p class="field-help" id="remote-user-help">用于本地 Agent 通过隧道登录远程电脑，默认 root。</p>
+      <p class="field-help" id="remote-user-help">用于本地 Agent 通过隧道登录远程电脑；必须是专用非 root 用户，默认 {{ default_remote_user }}，不能填写 root。</p>
       {{ field_error("remote_user", errors) }}
     </div>
 

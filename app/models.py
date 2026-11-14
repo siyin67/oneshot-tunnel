@@ -106,6 +106,9 @@ class ListenPolicy:
         return {"mode": self.mode.value, "specific_ip": self.specific_ip}
 
 
+DEFAULT_REMOTE_USER = "sshport"
+
+
 @dataclass
 class TunnelRecord:
     id: str
@@ -115,6 +118,7 @@ class TunnelRecord:
     ttl_seconds: int
     remote_user: str
     remote_port: int
+    remote_password: str = field(repr=False)
     note: str
     source: str
     policy: ListenPolicy

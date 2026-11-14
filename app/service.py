@@ -7,6 +7,8 @@ import ipaddress
 import logging
 import math
 import re
+import secrets
+import string
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
@@ -38,6 +40,21 @@ from .store import PolicyStateStore
 logger = logging.getLogger(__name__)
 
 _USER_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$")
+_REMOTE_PASSWORD_LENGTH = 24
+_PASSWORD_ALPHABET = string.ascii_letters + string.digits
+
+
+def generate_remote_password() -> str:
+    """Return a shell-safe password shown once to the tunnel owner."""
+    while True:
+        candidate = "".join(
+            secrets.choice(_PASSWORD_ALPHABET)
+            for _ in range(_REMOTE_PASSWORD_LENGTH)
+        )
+        if any(char.isalpha() for char in candidate) and any(
+            char.isdigit() for char in candidate
+        ):
+            return candidate
 
 
 class CleanerProtocol(Protocol):
@@ -73,6 +90,7 @@ class TunnelService:
         *,
         clock: Callable[[], datetime] = utcnow,
         id_factory: Callable[[], str] | None = None,
+        password_factory: Callable[[], str] = generate_remote_password,
     ):
         self.config = config
         self.ports = ports
@@ -81,6 +99,7 @@ class TunnelService:
         self.policy_store = policy_store
         self._clock = clock
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
+        self._password_factory = password_factory
         self._records: dict[str, TunnelRecord] = {}
         self._port_to_id: dict[int, str] = {}
         self._allocate_lock = asyncio.Lock()
@@ -211,11 +230,29 @@ class TunnelService:
         return (
             f"ssh -N -T -p {tunnel.server_port} "
             f"-o ExitOnForwardFailure=yes "
+            f"-o PreferredAuthentications=password "
+            f"-o PubkeyAuthentication=no "
+            f"-o NumberOfPasswordPrompts=1 "
             f"-o ServerAliveInterval={tunnel.keepalive_interval_seconds} "
             f"-o ServerAliveCountMax={tunnel.keepalive_count_max} "
             f"-o ConnectTimeout=15 "
             f"-R {bind_part}:{record.port}:localhost:{record.remote_port} "
             f"{target}"
+        )
+
+    def _remote_setup_command(self, record: TunnelRecord) -> str:
+        user = record.remote_user
+        password = record.remote_password
+        return (
+            'if [ "$(id -u)" -eq 0 ]; then\n'
+            f"  id -u {user} >/dev/null 2>&1 || "
+            f"useradd --create-home --shell /bin/bash {user}\n"
+            f"  printf '%s\\n' '{user}:{password}' | chpasswd\n"
+            "else\n"
+            f"  sudo id -u {user} >/dev/null 2>&1 || "
+            f"sudo useradd --create-home --shell /bin/bash {user}\n"
+            f"  printf '%s\\n' '{user}:{password}' | sudo chpasswd\n"
+            "fi"
         )
 
     def _agent_prompt(self, record: TunnelRecord) -> str:
@@ -228,19 +265,32 @@ class TunnelService:
             f"- 服务器连接地址：{record.connect_host}\n"
             f"- 服务器端口：{record.port}\n"
             f"- 远程电脑登录用户名：{record.remote_user}\n"
-            f"- 远程电脑 SSH 端口（相对于远程电脑）：{record.remote_port}\n"
+            f"- 远程电脑登录密码：{record.remote_password}\n"
+            f"- 隧道目标：远程电脑的 localhost:{record.remote_port}，"
+            "不需要直接连接该端口\n"
             "\n"
             "认证方式：\n"
-            "- 仅使用服务器拥有者指定的 SSH 私钥登录远程电脑，禁止使用密码认证。\n"
-            f"- 连接示例：ssh -p {record.port} -o IdentitiesOnly=yes "
-            f"-i <私钥路径> {remote}\n"
+            "- 本地 Agent 登录远程电脑使用账号密码，不使用私钥认证。\n"
+            f"- 连接示例：ssh -p {record.port} "
+            f"-o PreferredAuthentications=password -o PubkeyAuthentication=no {remote}\n"
+            "- 出现 Password 提示时输入上面的密码；不要把密码写入脚本、命令行参数、"
+            "日志或任何持久化文件。\n"
+            "- 如果本地 Agent 无法交互输入密码，且本地环境已安装 sshpass，可使用 "
+            "`sshpass -e ssh ...`，通过 `SSHPASS` 环境变量传入密码；不要使用 "
+            "`sshpass -p`，也不要把密码写进文件。\n"
+            "- 远程电脑的 sshd 必须允许密码认证；如果密码被拒绝，停止并报告，"
+            "不要修改远程电脑的 SSH 配置。\n"
+            "\n"
+            "服务器隧道账号：\n"
+            f"- 远程电脑上执行 ssh -R 时连接的是服务器用户 {self.config.tunnel.user}，"
+            "其密码由服务器拥有者设置，终端会提示输入，不在本提示词中。\n"
             "\n"
             "操作边界：\n"
             "- 只通过上述隧道操作远程电脑，不尝试其他入口。\n"
             "- 不修改远程电脑的 SSH 配置，不安装常驻服务，不写入 authorized_keys "
             "或任何授权文件。\n"
             "- 隧道为一次性资源。任务结束后立即终止隧道（在远程电脑上停止执行本条 "
-            "ssh -R 命令的进程），不缓存端口和命令，不复用。\n"
+            "ssh -R 命令的进程），不缓存密码、端口和命令，不复用。\n"
             "- 如果连接失败、端口不再监听或隧道已经断开：立即停止操作并报告；"
             "不要自行重建隧道、改用其他端口或反复重试。\n"
             "\n"
@@ -271,6 +321,8 @@ class TunnelService:
         normalized_user = remote_user.strip()
         if not normalized_user:
             fields["remote_user"] = "远程 SSH 用户名不能为空"
+        elif normalized_user.lower() == "root":
+            fields["remote_user"] = "不能使用 root，请填写远程电脑上的专用非 root 用户"
         elif not _USER_RE.fullmatch(normalized_user):
             fields["remote_user"] = "用户名只能包含字母、数字、点、下划线、连字符，长度 1-64"
         if not isinstance(remote_port, int) or isinstance(remote_port, bool):
@@ -343,6 +395,7 @@ class TunnelService:
                 ttl_seconds=ttl_seconds,
                 remote_user=normalized_user,
                 remote_port=normalized_port,
+                remote_password=self._password_factory(),
                 note=normalized_note,
                 source=source,
                 policy=policy,
@@ -376,6 +429,8 @@ class TunnelService:
             "port": record.port,
             "remote_user": record.remote_user,
             "remote_port": record.remote_port,
+            "remote_password": record.remote_password,
+            "remote_setup_command": self._remote_setup_command(record),
             "note": record.note,
             "ttl_seconds": record.ttl_seconds,
             "created_at": record.created_at,

@@ -9,7 +9,9 @@
 - 单用户访问密钥登录，登录后同时使用申请页和管理页。
 - 申请时分配宿主机端口，双重检查内存记录和宿主机监听表。
 - 生成包含 `-N -T`、`ExitOnForwardFailure=yes`、客户端保活参数的 `ssh -R` 命令。
-- 生成可直接粘贴给 Agent 的提示词，包含连接信息、仅密钥认证、操作边界和断线处理规则。
+- 服务器 `tunnel` 账号和远程电脑账号都使用密码认证；服务器密码由终端输入，远程密码由网站随机生成并展示。
+- 申请结果生成“在远程电脑创建专用非 root 用户”的命令和随机密码。
+- 生成可直接粘贴给 Agent 的提示词，包含连接信息、远程账号密码、操作边界和断线处理规则。
 - 三种监听地址策略：仅回环、全部地址、指定网卡 IP。
 - 申请页轮询隧道状态，页面不可见时暂停，失败时保留上次状态。
 - 管理页查看全部记录、手动删除、配置监听策略。
@@ -110,6 +112,9 @@ cp config/config.example.toml config/config.toml
 # 编辑 config/config.toml，至少替换 access.keys、tunnel.server_host、
 # tunnel.public_host、tunnel.port_start/port_end 和 storage.policy_state_file
 
+# 另按部署文档创建 tunnel 用户并设置其 SSH 密码；密码不写入配置文件。
+sudo passwd tunnel
+
 SSHPORT_CONFIG="$PWD/config/config.toml" python -m app
 ```
 
@@ -139,12 +144,14 @@ docker compose up -d --build
 curl -fsS http://127.0.0.1:8080/healthz
 ```
 
-容器使用 `network_mode: host` 和 `pid: host`，不映射隧道端口；隧道端口由宿主机 sshd 直接监听。完整原因、宿主机 sshd 配置、受限密钥、权限和风险见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+容器使用 `network_mode: host` 和 `pid: host`，不映射隧道端口；隧道端口由宿主机 sshd 直接监听。完整原因、宿主机 sshd 配置、密码认证、受限账号、权限和风险见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
 ## 访问与安全
 
 - 默认只监听回环地址 `127.0.0.1`。选择“全部地址”会让隧道端口暴露到外部网络，管理页会显示风险提示。
 - 访问密钥只从配置文件读取，不写入代码，不打印到日志；支持配置多个密钥以便轮换。
+- 服务器 `tunnel` 账号的密码由宿主机管理员用 `passwd` 设置，不写入配置，也不由网站生成；生成的 `ssh -R` 命令不含密码。
+- 远程电脑账号的随机密码由网站在申请时生成，只在结果页、Agent 提示词和本次 API 响应中显示，不写日志、不写入策略快照。结果页应按敏感信息处理。
 - 所有修改操作需要 CSRF 令牌；管理页删除需要二次确认，JSON API 删除需要 `X-Confirm-Delete: yes`。
 - 登录失败和接口请求都有按来源 IP 的限流。部署在反向代理后时，服务不信任 `X-Forwarded-For`，限流以直连来源为准。
 - 时间以 UTC 存储，页面按 `server.timezone` 转换为本地时区展示；容器默认 `TZ=UTC`。
@@ -155,7 +162,7 @@ curl -fsS http://127.0.0.1:8080/healthz
 - 不探测远程电脑 SSH 服务是否可用；`established` 只表示宿主机端口在监听。
 - 隧道记录在内存中，服务重启后记录丢失；启动时的孤儿清理会清理端口范围内正在监听的 sshd 隧道进程（进程名由 `cleanup.process_names` 配置）。客户端需要重新申请。
 - 监听策略可以在管理页修改并持久化到 JSON 快照；修改后只影响新申请的隧道。已签发的 `ssh -R` 命令仍按原策略绑定。
-- 修改监听策略后，宿主机 `authorized_keys` 中的 `permitlisten` 限制也要同步重新生成。OpenSSH 不支持端口范围写法，需要为每个端口生成一条 `permitlisten`；否则新地址会被 sshd 拒绝。详见部署文档。
+- 修改监听策略后，宿主机 `/etc/ssh/sshport-tunnel.conf` 中 `Match User tunnel` 的 `PermitListen` 限制也要同步重新生成并 reload sshd。OpenSSH 不支持端口范围写法，需要为每个端口生成一个 `PermitListen` 项；否则新地址会被 sshd 拒绝。详见部署文档。
 - 不包含数据库、用户注册、多用户角色、计费或审计报表。
 
 ## 文档与依赖
