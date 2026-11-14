@@ -13,7 +13,7 @@
                     |  /proc/net/tcp  -> 宿主机端口表       |
                     |  sudo helper    -> 宿主机 sshd 进程   |
                     |                                      |
-  远程电脑 ---------> |  宿主机 sshd :22                      |
+  远程 Windows -----> |  宿主机 sshd :22                      |
   ssh -R 命令        |   监听 127.0.0.1 / 0.0.0.0 / 指定 IP |
                     |   端口 30000-30099                    |
                     |                                      |
@@ -24,9 +24,9 @@
 职责划分：
 
 - 容器：登录、端口分配、命令与提示词生成、状态探测、自动回收、手动删除、策略管理。
-- 宿主机 sshd：接受远程电脑的 SSH 连接，按 `ssh -R` 请求监听隧道端口，维护保活和断连。
+- 宿主机 sshd：接受远程 Windows 的 SSH 连接，按 `ssh -R` 请求监听隧道端口，维护保活和断连。
 - 容器不映射任何隧道端口，不运行 SSH 服务，不代理 SSH 流量。
-- 网站只探测宿主机端口是否在监听，不探测远程电脑上的 SSH 服务是否可用。
+- 网站只探测宿主机端口是否在监听，不探测远程 Windows 上的 SSH 服务是否可用。
 
 ## 2. 前置条件
 
@@ -35,7 +35,7 @@
 - Docker Engine 与 Docker Compose v2。必须使用 Linux 容器；Docker Desktop 的 host network 行为与 Linux 不同，不作为生产部署方式。
 - 宿主机安装 `iproute2`（提供 `ip` 和 `ss`）、`sudo`、`tzdata`。镜像内已包含这些包。
 - 一个专用的 tunnel 用户（示例为 `tunnel`），并为它设置独立的登录密码。
-- 远程电脑为 Linux 或类 Unix 系统，具备 `useradd`、`chpasswd`、`sudo` 或 root 权限，并允许 SSH 密码认证；申请页会生成专用非 root 用户创建命令和随机密码，Windows 远程主机不适用当前创建命令。
+- 远程电脑为 Windows 10/11 或 Windows Server 2016+，安装 OpenSSH Server 并允许 SSH 密码认证。申请页会生成在远程 Windows 上创建/更新本地专用用户的 PowerShell 命令和随机密码；该用户默认 `sshport`，只加入 Users 组，不加入 Administrators。
 - 一个专用端口范围（示例为 30000-30099），不要与网站端口、宿主机其他服务重叠。
 
 ## 3. 宿主机 sshd 配置
@@ -53,7 +53,7 @@ AllowTcpForwarding remote
 # 设为 yes 会忽略客户端地址并强制通配绑定，无法实现仅回环。
 GatewayPorts clientspecified
 
-# 及时感知远程电脑断线，配合命令中的 ServerAlive* 参数。
+# 及时感知远程 Windows 断线，配合命令中的 ServerAlive* 参数。
 ClientAliveInterval 15
 ClientAliveCountMax 3
 ```
@@ -169,7 +169,8 @@ sudo sshd -T -C user=tunnel,host=localhost,addr=127.0.0.1 \
 验证远程转发：
 
 ```bash
-# 在远程电脑执行网站生成的命令（下面只是示例）；终端会提示输入 tunnel 的密码。
+# 在远程 Windows 的 PowerShell 或 cmd 中执行网站生成的命令（下面只是示例）；
+# 终端会提示输入服务器 tunnel 用户的密码。
 ssh -N -T -p 22 \
   -o ExitOnForwardFailure=yes \
   -o PreferredAuthentications=password \
@@ -189,13 +190,25 @@ ssh -tt tunnel@tunnel.example.com
 # 应被拒绝或立即退出，不能获得交互式 shell
 ```
 
-远程电脑上的登录用户由申请页生成，不在这台宿主机上创建；其密码也是申请页随机生成并展示的。远程电脑的 sshd 必须允许密码认证，否则本地 Agent 无法通过隧道登录。
+远程 Windows 上的登录用户由申请页生成，不在这台宿主机上创建；其密码也是申请页随机生成并展示的。申请页命令使用 PowerShell 的 `New-LocalUser` / `Set-LocalUser` 创建或更新本地标准用户，并把它加入 Users 组；需要本地管理员权限，不能在域控制器上使用 `New-LocalUser`。远程 Windows 的 OpenSSH Server 必须允许密码认证，否则本地 Agent 无法通过隧道登录。
+
+远程 Windows 上确认密码认证：
+
+```powershell
+# 以管理员身份打开 PowerShell。
+Get-Content C:\ProgramData\ssh\sshd_config | Select-String 'PasswordAuthentication'
+Get-Service sshd
+# 如修改了 sshd_config，重启服务。
+Restart-Service sshd
+```
+
+`sshd_config` 中应有 `PasswordAuthentication yes`（未被注释）。Windows 本地账号必须设置非空密码；结果页第一步生成的随机密码已满足默认复杂度策略。不要把该账号加入 Administrators。
 
 ### 3.4 防火墙和地址
 
 - 网站端口（默认 8080）只对管理员网络开放；公网部署建议放在 HTTPS 反向代理之后。
 - 仅回环策略不需要开放隧道端口。
-- 全部地址策略需要防火墙放行隧道端口范围；这会把远程电脑的 SSH 端口暴露给能访问这些端口的网络。
+- 全部地址策略需要防火墙放行隧道端口范围；这会把远程 Windows 的 SSH 端口暴露给能访问这些端口的网络。
 - 指定地址策略只需在对应网卡和网络范围内放行。
 - 云厂商安全组、宿主机 nftables/iptables、上游防火墙都要检查。
 
@@ -374,7 +387,7 @@ docker compose down
 
 | 字段 | 类型 | 说明 | 约束 |
 | --- | --- | --- | --- |
-| `user` | 字符串 | 远程电脑连接服务器使用的受限 SSH 用户 | 合法用户名；该账号需在宿主机设置密码，密码不写入本配置 |
+| `user` | 字符串 | 远程 Windows 连接服务器使用的受限 SSH 用户 | 合法用户名；该账号需在宿主机设置密码，密码不写入本配置 |
 | `server_host` | 字符串 | 隧道服务器地址，写入 `ssh -R` 命令 | 主机名或 IP，不带端口/协议 |
 | `server_port` | 整数 | 隧道服务器 SSH 端口 | 1-65535，且不在隧道端口范围内 |
 | `port_start` / `port_end` | 整数 | 宿主机可分配的闭区间端口范围 | 1-65535，start <= end |
@@ -389,7 +402,7 @@ docker compose down
 | `keepalive_interval_seconds` | 整数 | `ServerAliveInterval` | 1-3600 |
 | `keepalive_count_max` | 整数 | `ServerAliveCountMax` | 正整数 |
 
-`tunnel.user` 只是服务器侧的 SSH 账号名。该账号的密码由宿主机管理员用 `passwd` 设置，不在配置文件中，也不由网站生成或保存。远程电脑上被操作的账号则是另一回事：它由申请页生成，用户名默认 `sshport`，密码随机生成并显示在结果页。
+`tunnel.user` 只是服务器侧的 SSH 账号名。该账号的密码由宿主机管理员用 `passwd` 设置，不在配置文件中，也不由网站生成或保存。远程 Windows 上被操作的账号则是另一回事：它由申请页生成，用户名默认 `sshport`，密码随机生成并显示在结果页。
 
 `listen_mode` 是首次启动的初始值。管理页保存过策略后，`data/policy.json` 优先；删除该文件可恢复配置文件值。
 
@@ -436,11 +449,11 @@ docker compose down
 ### 8.1 申请隧道
 
 1. 登录后打开申请页。
-2. 填写远程电脑 SSH 用户名（默认 `sshport`，必须是非 root 专用用户）、远程 SSH 端口（默认 22）、有效期、备注。填写 `root` 会被拒绝。
-3. 提交后，结果页第一步给出“创建远程用户”命令和随机密码。把命令复制到远程电脑，用 root 或 sudo 执行一次。若同名用户不存在会创建；若已存在，会重置其密码，因此请确认用户名是专用账号。命令包含密码，不要在多人可见的终端或日志中保留。
-4. 确认远程电脑的 sshd 允许密码认证。若远程 sshd 禁止密码登录，本方案无法建立 Agent 连接；不要为此修改网站或重置远程 SSH 配置，先与远程电脑拥有者确认。
-5. 结果页第二步复制 `ssh -R` 命令，在**远程电脑**执行；终端提示的是服务器 `tunnel` 用户的密码，不是上一步生成的远程密码。
-6. 把第三步的 Agent 提示词复制给本地 Agent。Agent 使用远程用户名和随机密码登录远程电脑。
+2. 填写远程 Windows 的 SSH 用户名（默认 `sshport`，必须是专用标准用户，最多 20 个字符）、远程 SSH 端口（默认 22）、有效期、备注。填写 `root` 或 `Administrator` 会被拒绝。
+3. 提交后，结果页第一步给出在远程 Windows 上执行的 PowerShell 命令和随机密码。在远程 Windows 上以管理员身份打开 PowerShell，粘贴执行一次。命令会创建或更新本地用户、设置不过期密码、启用账户，并加入 Users 组；若同名用户已存在会重置其密码，因此请确认用户名是专用账号。命令包含密码，不要在多人可见的终端或日志中保留。
+4. 确认远程 Windows 的 OpenSSH Server 允许密码认证。若远程 sshd 禁止密码登录，本方案无法建立 Agent 连接；不要为此修改网站或重置远程 SSH 配置，先与远程电脑拥有者确认。
+5. 结果页第二步复制 `ssh -R` 命令，在**远程 Windows** 的 PowerShell 或 cmd 中执行；终端提示的是服务器 `tunnel` 用户的密码，不是上一步生成的远程密码。
+6. 把第三步的 Agent 提示词复制给本地 Agent。Agent 使用远程 Windows 用户名和随机密码登录远程电脑，需要时通过 PowerShell 执行命令。
 7. 观察状态从“已分配，待连接”变为“已建立”。
 
 远程用户密码只在申请结果页、Agent 提示词和本次 API 响应中出现；服务不把它写入日志或策略快照。隧道记录在内存中，服务重启后密码和记录一起丢失。
@@ -469,11 +482,11 @@ docker compose down
 
 检查顺序：
 
-1. 远程电脑上的 `ssh` 进程是否仍在运行，命令是否包含 `ExitOnForwardFailure=yes`。
+1. 远程 Windows 上的 `ssh` 进程是否仍在运行，命令是否包含 `ExitOnForwardFailure=yes`。
 2. 宿主机 `sshd -T` 是否显示 `gatewayports clientspecified` 和 `allowtcpforwarding remote`；如果全局配置了 `AllowUsers`/`AllowGroups`，确认 `tunnel` 被允许。
 3. `/etc/ssh/sshport-tunnel.conf` 的 `Match User tunnel` 是否包含当前策略地址和端口对应的 `PermitListen`；改过策略但没重新生成或没 reload 是常见原因。
 4. 服务器 `tunnel` 用户是否已设置密码，`PasswordAuthentication` 是否在 Match 中启用；密码错误会直接认证失败。
-5. 远程电脑的 sshd 是否允许密码认证，远程账号是否被锁定；在远程电脑检查 `sshd -T | grep passwordauthentication` 和 `passwd -S <远程用户>`。
+5. 远程 Windows 的 OpenSSH Server 是否允许密码认证，本地账号是否启用或锁定；在远程 Windows 的 PowerShell 中检查 `Get-Content C:\ProgramData\ssh\sshd_config | Select-String PasswordAuthentication`、`Get-Service sshd`、`Get-LocalUser -Name <远程用户>`，必要时查看 `OpenSSH/Operational` 事件日志。
 6. 端口是否在 `tunnel.port_start..port_end` 内。
 7. 宿主机防火墙/云安全组是否放行（all/specific 模式）。
 8. `journalctl -u sshd` 或 `/var/log/auth.log` 中是否有 `remote port forwarding failed`、`administratively prohibited`。
@@ -529,7 +542,7 @@ docker compose exec sshport python /app/docker/healthcheck.py
 - [ ] 默认使用 `loopback` 策略；只有明确需要时才使用 `all`，并配置防火墙。
 - [ ] `tunnel` 用户只使用密码认证、不能 shell、只能远程转发；密码独立且足够强。
 - [ ] `/etc/ssh/sshport-tunnel.conf` 的 `Match User tunnel` 使用 `MaxSessions 0`、`PermitTTY no`、`ForceCommand /bin/false`，并按策略生成 `PermitListen`；策略变更后重新生成并 reload。
-- [ ] 远程电脑使用申请页生成的非 root 专用用户；随机密码不写入日志或持久化文件。
+- [ ] 远程 Windows 使用申请页创建的本地标准用户（不是 Administrator，且不在 Administrators 组）；随机密码不写入日志或持久化文件。
 - [ ] 服务器 `tunnel` 密码未写入 `config.toml`、未提交 Git、未与网站访问密钥复用。
 - [ ] 端口范围专用，启动孤儿清理不会命中其他服务。
 - [ ] Docker 管理权限仅授予可信管理员；不使用 `privileged` 或 Docker socket 挂载。
@@ -570,8 +583,8 @@ docker compose down
 | 未登录拦截 | 清除 cookie 后访问 `/apply`、`/admin`，应 303 到 `/login`；API 返回 401 |
 | 密钥配置生效 | 修改 `access.keys` 并 `docker compose restart`，旧密钥失效、新密钥可登录 |
 | 申请返回命令 | 登录后申请，页面显示端口、`ssh -R` 命令、远程用户创建命令和 Agent 提示词 |
-| 远程用户创建 | 在远程电脑执行结果页第一步命令，`id sshport` 成功，密码为页面显示值 |
-| 密码认证生效 | 服务器 `ssh -R` 终端提示输入 `tunnel` 密码；Agent 连接远程电脑时使用生成的远程密码 |
+| 远程用户创建 | 在远程 Windows 的管理员 PowerShell 执行结果页第一步命令，`Get-LocalUser -Name sshport` 显示 Enabled，`Get-LocalGroupMember -Group Users` 包含该用户，密码为页面显示值 |
+| 密码认证生效 | 服务器 `ssh -R` 终端提示输入 `tunnel` 密码；Agent 连接远程 Windows 时使用生成的远程密码 |
 | 远程执行后监听 | 在另一台机器执行命令，宿主机 `ss -ltnp` 看到对应地址和端口 |
 | 策略隔离 | 切换策略后新申请使用新绑定地址，旧记录保留原地址 |
 | 指定地址校验 | 管理页填不存在的 IP，返回 400 和“不在宿主机任何网卡上” |

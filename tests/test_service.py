@@ -62,6 +62,9 @@ def test_command_and_prompt_contain_required_contract(service: TunnelService):
     prompt = payload["agent_prompt"]
     assert "服务器连接地址：127.0.0.1" in prompt
     assert "服务器端口：32000" in prompt
+    assert "远程 Windows 电脑" in prompt
+    assert "远程电脑运行 Windows" in prompt
+    assert "PowerShell" in prompt
     assert "远程电脑登录用户名：sshport" in prompt
     assert "本地 Agent 登录远程电脑使用账号密码，不使用私钥认证" in prompt
     assert "远程电脑登录密码：" in prompt
@@ -92,10 +95,17 @@ def test_password_auth_and_remote_setup_command(service: TunnelService, caplog):
     assert password not in command
 
     setup = payload["remote_setup_command"]
-    assert "useradd --create-home --shell /bin/bash sshport" in setup
-    assert f"'sshport:{password}'" in setup
-    assert "chpasswd" in setup
-    assert "sudo" in setup
+    assert "$ErrorActionPreference = 'Stop'" in setup
+    assert "$name = 'sshport'" in setup
+    assert f"ConvertTo-SecureString '{password}' -AsPlainText -Force" in setup
+    assert "New-LocalUser -Name $name" in setup
+    assert "Set-LocalUser -Name $name -Password $password" in setup
+    assert "Enable-LocalUser -Name $name" in setup
+    assert "Add-LocalGroupMember -Group $usersGroup.Name -Member $name" in setup
+    assert "Administrators" not in setup
+    assert "useradd" not in setup
+    assert "chpasswd" not in setup
+    assert "sudo" not in setup
 
     prompt = payload["agent_prompt"]
     assert f"远程电脑登录密码：{password}" in prompt
@@ -155,6 +165,14 @@ def test_request_validation(service: TunnelService):
     with pytest.raises(ValidationError) as exc:
         create(service, remote_user="root")
     assert "不能使用 root" in exc.value.fields["remote_user"]
+
+    with pytest.raises(ValidationError) as exc:
+        create(service, remote_user="Administrator")
+    assert "Administrator" in exc.value.fields["remote_user"]
+
+    with pytest.raises(ValidationError) as exc:
+        create(service, remote_user="a" * 21)
+    assert "20 个字符" in exc.value.fields["remote_user"]
 
     with pytest.raises(ValidationError) as exc:
         create(service, remote_port=70000)

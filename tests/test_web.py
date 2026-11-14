@@ -119,10 +119,13 @@ def test_login_sets_cookie_and_apply_returns_command_prompt(web):
     assert "服务器端口" in body
     assert "隧道服务器的 22 端口可达" in body
     assert "不探测远程电脑" in body
-    assert "第一步：在远程电脑创建登录用户" in body
-    assert "第二步：在远程电脑建立隧道" in body
-    assert "useradd --create-home --shell /bin/bash sshport" in body
-    assert "chpasswd" in body
+    assert "第一步：在远程 Windows 创建登录用户" in body
+    assert "第二步：在远程 Windows 建立隧道" in body
+    assert "New-LocalUser -Name $name" in body
+    assert "Set-LocalUser -Name $name -Password $password" in body
+    assert "Add-LocalGroupMember" in body
+    assert "useradd" not in body
+    assert "chpasswd" not in body
     assert "远程电脑登录密码：" in body
     password = PASSWORD_RE.search(body)
     assert password, "result page has no generated remote password"
@@ -237,9 +240,8 @@ def test_api_create_status_and_delete(web):
     assert payload["status"] == "pending"
     assert payload["listen_address"] == "127.0.0.1"
     assert len(payload["remote_password"]) == 24
-    assert "useradd --create-home --shell /bin/bash sshport" in payload[
-        "remote_setup_command"
-    ]
+    assert "New-LocalUser -Name $name" in payload["remote_setup_command"]
+    assert "useradd" not in payload["remote_setup_command"]
     assert payload["remote_password"] not in payload["ssh_command"]
     assert "PreferredAuthentications=password" in payload["ssh_command"]
     assert payload["remote_password"] in payload["agent_prompt"]

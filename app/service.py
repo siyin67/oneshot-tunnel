@@ -244,30 +244,41 @@ class TunnelService:
         user = record.remote_user
         password = record.remote_password
         return (
-            'if [ "$(id -u)" -eq 0 ]; then\n'
-            f"  id -u {user} >/dev/null 2>&1 || "
-            f"useradd --create-home --shell /bin/bash {user}\n"
-            f"  printf '%s\\n' '{user}:{password}' | chpasswd\n"
-            "else\n"
-            f"  sudo id -u {user} >/dev/null 2>&1 || "
-            f"sudo useradd --create-home --shell /bin/bash {user}\n"
-            f"  printf '%s\\n' '{user}:{password}' | sudo chpasswd\n"
-            "fi"
+            "# Run this in an elevated PowerShell on the remote Windows computer.\n"
+            "$ErrorActionPreference = 'Stop'\n"
+            f"$name = '{user}'\n"
+            f"$password = ConvertTo-SecureString '{password}' -AsPlainText -Force\n"
+            "if (Get-LocalUser -Name $name -ErrorAction SilentlyContinue) {\n"
+            "    Set-LocalUser -Name $name -Password $password "
+            "-PasswordNeverExpires $true\n"
+            "} else {\n"
+            "    New-LocalUser -Name $name -Password $password "
+            "-PasswordNeverExpires -AccountNeverExpires "
+            "-Description 'One-shot SSH tunnel account'\n"
+            "}\n"
+            "Enable-LocalUser -Name $name\n"
+            "$usersGroup = Get-LocalGroup -SID 'S-1-5-32-545'\n"
+            "if (-not (Get-LocalGroupMember -Group $usersGroup.Name -Member $name "
+            "-ErrorAction SilentlyContinue)) {\n"
+            "    Add-LocalGroupMember -Group $usersGroup.Name -Member $name\n"
+            "}"
         )
 
     def _agent_prompt(self, record: TunnelRecord) -> str:
         host = format_host_for_ssh(record.connect_host)
         remote = f"{record.remote_user}@{host}"
         return (
-            "你正在通过一条一次性 SSH 反向隧道操作远程电脑。\n"
+            "你正在通过一条一次性 SSH 反向隧道操作远程 Windows 电脑。\n"
             "\n"
             "连接信息：\n"
             f"- 服务器连接地址：{record.connect_host}\n"
             f"- 服务器端口：{record.port}\n"
             f"- 远程电脑登录用户名：{record.remote_user}\n"
             f"- 远程电脑登录密码：{record.remote_password}\n"
-            f"- 隧道目标：远程电脑的 localhost:{record.remote_port}，"
+            f"- 隧道目标：远程 Windows 的 localhost:{record.remote_port}，"
             "不需要直接连接该端口\n"
+            "- 远程电脑运行 Windows；需要执行命令时使用 PowerShell"
+            "（例如 powershell -NoProfile -Command \"...\"），不要假设有 bash。\n"
             "\n"
             "认证方式：\n"
             "- 本地 Agent 登录远程电脑使用账号密码，不使用私钥认证。\n"
@@ -278,8 +289,8 @@ class TunnelService:
             "- 如果本地 Agent 无法交互输入密码，且本地环境已安装 sshpass，可使用 "
             "`sshpass -e ssh ...`，通过 `SSHPASS` 环境变量传入密码；不要使用 "
             "`sshpass -p`，也不要把密码写进文件。\n"
-            "- 远程电脑的 sshd 必须允许密码认证；如果密码被拒绝，停止并报告，"
-            "不要修改远程电脑的 SSH 配置。\n"
+            "- 远程 Windows 的 OpenSSH Server 必须允许密码认证；如果密码被拒绝，"
+            "停止并报告，不要修改远程电脑的 SSH 配置。\n"
             "\n"
             "服务器隧道账号：\n"
             f"- 远程电脑上执行 ssh -R 时连接的是服务器用户 {self.config.tunnel.user}，"
@@ -321,10 +332,15 @@ class TunnelService:
         normalized_user = remote_user.strip()
         if not normalized_user:
             fields["remote_user"] = "远程 SSH 用户名不能为空"
-        elif normalized_user.lower() == "root":
-            fields["remote_user"] = "不能使用 root，请填写远程电脑上的专用非 root 用户"
+        elif normalized_user.lower() in {"root", "administrator"}:
+            fields["remote_user"] = (
+                "不能使用 root 或 Windows 内置 Administrator，"
+                "请填写远程电脑上的专用标准用户"
+            )
         elif not _USER_RE.fullmatch(normalized_user):
-            fields["remote_user"] = "用户名只能包含字母、数字、点、下划线、连字符，长度 1-64"
+            fields["remote_user"] = "用户名只能包含字母、数字、点、下划线、连字符，长度 1-20"
+        elif len(normalized_user) > 20:
+            fields["remote_user"] = "Windows 本地用户名不能超过 20 个字符"
         if not isinstance(remote_port, int) or isinstance(remote_port, bool):
             fields["remote_port"] = "远程 SSH 端口必须是整数"
         elif not 1 <= remote_port <= 65_535:
