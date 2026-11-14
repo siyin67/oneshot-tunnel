@@ -96,6 +96,8 @@ def test_login_sets_cookie_and_apply_returns_command_prompt(web):
     response = client.get("/apply")
     assert response.status_code == 200
     assert 'value="sshport"' in response.text
+    assert 'name="server_user"' in response.text
+    assert 'value="tunnel"' in response.text
     assert "不能填写 root" in response.text
     csrf = CSRF_RE.search(response.text).group(1)
 
@@ -105,6 +107,7 @@ def test_login_sets_cookie_and_apply_returns_command_prompt(web):
             "csrf_token": csrf,
             "remote_user": "sshport",
             "remote_port": "2222",
+            "server_user": "ops",
             "ttl_seconds": "60",
             "note": "web-smoke",
         },
@@ -118,6 +121,8 @@ def test_login_sets_cookie_and_apply_returns_command_prompt(web):
     assert "data-poll-seconds=\"5\"" in body
     assert "服务器端口" in body
     assert "隧道服务器的 22 端口可达" in body
+    assert "服务器账号 ops 的密码" in body
+    assert "ops@tunnel.example.com" in body
     assert "不探测远程电脑" in body
     assert "第一步：在远程 Windows 创建登录用户" in body
     assert "第二步：在远程 Windows 建立隧道" in body
@@ -217,6 +222,20 @@ def test_apply_validation_and_csrf(web):
     assert response.status_code == 400
     assert "不能使用 root" in response.text
 
+    response = client.post(
+        "/apply",
+        data={
+            "csrf_token": csrf,
+            "remote_user": "sshport",
+            "remote_port": "22",
+            "server_user": "",
+            "ttl_seconds": "60",
+            "note": "",
+        },
+    )
+    assert response.status_code == 400
+    assert "连接服务器的 SSH 用户名不能为空" in response.text
+
 
 def test_api_create_status_and_delete(web):
     client, service, ports, cleaner = web
@@ -228,6 +247,7 @@ def test_api_create_status_and_delete(web):
         json={
             "remote_user": "sshport",
             "remote_port": 22,
+            "server_user": "ops",
             "ttl_seconds": 60,
             "note": "api",
         },
@@ -238,6 +258,8 @@ def test_api_create_status_and_delete(web):
     tunnel_id = payload["id"]
     port = payload["port"]
     assert payload["status"] == "pending"
+    assert payload["server_user"] == "ops"
+    assert "ops@tunnel.example.com" in payload["ssh_command"]
     assert payload["listen_address"] == "127.0.0.1"
     assert len(payload["remote_password"]) == 24
     assert "New-LocalUser -Name $name" in payload["remote_setup_command"]
@@ -245,6 +267,18 @@ def test_api_create_status_and_delete(web):
     assert payload["remote_password"] not in payload["ssh_command"]
     assert "PreferredAuthentications=password" in payload["ssh_command"]
     assert payload["remote_password"] in payload["agent_prompt"]
+
+    response = client.post(
+        "/api/tunnels",
+        json={
+            "remote_user": "sshport",
+            "server_user": "bad user",
+            "ttl_seconds": 60,
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 400
+    assert "server_user" in response.json()["error"]["fields"]
 
     response = client.post(
         "/api/tunnels",

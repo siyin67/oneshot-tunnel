@@ -75,6 +75,16 @@ def test_command_and_prompt_contain_required_contract(service: TunnelService):
     assert payload["remaining_seconds"] == 60
 
 
+def test_custom_server_user_is_used_in_command_and_prompt(service: TunnelService):
+    application = create(service, server_user="ops")
+    payload = service.application_payload(application)
+
+    assert payload["server_user"] == "ops"
+    assert application.record.server_user == "ops"
+    assert "ops@tunnel.example.com" in payload["ssh_command"]
+    assert "服务器用户 ops" in payload["agent_prompt"]
+
+
 def test_password_auth_and_remote_setup_command(service: TunnelService, caplog):
     caplog.set_level(logging.INFO, logger="app.service")
     application = create(service)
@@ -178,6 +188,14 @@ def test_request_validation(service: TunnelService):
     with pytest.raises(ValidationError) as exc:
         create(service, remote_port=70000)
     assert "remote_port" in exc.value.fields
+
+    with pytest.raises(ValidationError) as exc:
+        create(service, server_user="bad user")
+    assert "server_user" in exc.value.fields
+
+    with pytest.raises(ValidationError) as exc:
+        create(service, server_user="")
+    assert "server_user" in exc.value.fields
 
     with pytest.raises(ValidationError) as exc:
         create(service, ttl_seconds=999)

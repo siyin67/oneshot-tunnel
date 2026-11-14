@@ -40,6 +40,7 @@ from .store import PolicyStateStore
 logger = logging.getLogger(__name__)
 
 _USER_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$")
+_SERVER_USER_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$")
 _REMOTE_PASSWORD_LENGTH = 24
 _PASSWORD_ALPHABET = string.ascii_letters + string.digits
 
@@ -228,7 +229,7 @@ class TunnelService:
         tunnel = self.config.tunnel
         bind = record.bind_address
         bind_part = f"[{bind}]" if ":" in bind else bind
-        target = f"{tunnel.user}@{format_host_for_ssh(tunnel.server_host)}"
+        target = f"{record.server_user}@{format_host_for_ssh(tunnel.server_host)}"
         return (
             f"ssh -N -T -p {tunnel.server_port} "
             f"-o ExitOnForwardFailure=yes "
@@ -295,7 +296,7 @@ class TunnelService:
             "停止并报告，不要修改远程电脑的 SSH 配置。\n"
             "\n"
             "服务器隧道账号：\n"
-            f"- 远程电脑上执行 ssh -R 时连接的是服务器用户 {self.config.tunnel.user}，"
+            f"- 远程电脑上执行 ssh -R 时连接的是服务器用户 {record.server_user}，"
             "其密码由服务器拥有者设置，终端会提示输入，不在本提示词中。\n"
             "\n"
             "操作边界：\n"
@@ -328,9 +329,29 @@ class TunnelService:
         return max(candidates, key=lambda record: record.created_at)
 
     def _validate_request(
-        self, remote_user: str, remote_port: int, ttl_seconds: int, note: str
-    ) -> tuple[str, int, str]:
+        self,
+        server_user: str | None,
+        remote_user: str,
+        remote_port: int,
+        ttl_seconds: int,
+        note: str,
+    ) -> tuple[str, str, int, str]:
         fields: dict[str, str] = {}
+        raw_server_user = (
+            self.config.tunnel.user if server_user is None else server_user
+        )
+        if not isinstance(raw_server_user, str):
+            fields["server_user"] = "连接服务器的 SSH 用户名必须是字符串"
+            normalized_server_user = ""
+        else:
+            normalized_server_user = raw_server_user.strip()
+            if not normalized_server_user:
+                fields["server_user"] = "连接服务器的 SSH 用户名不能为空"
+            elif not _SERVER_USER_RE.fullmatch(normalized_server_user):
+                fields["server_user"] = (
+                    "服务器用户名只能包含字母、数字、点、下划线、连字符，"
+                    "长度 1-32，且不能以连字符开头"
+                )
         normalized_user = remote_user.strip()
         if not normalized_user:
             fields["remote_user"] = "远程 SSH 用户名不能为空"
@@ -356,7 +377,7 @@ class TunnelService:
             fields["note"] = "备注不能包含控制字符"
         if fields:
             raise ValidationError(fields)
-        return normalized_user, remote_port, normalized_note
+        return normalized_server_user, normalized_user, remote_port, normalized_note
 
     async def create_tunnel(
         self,
@@ -366,9 +387,15 @@ class TunnelService:
         ttl_seconds: int,
         note: str,
         source: str,
+        server_user: str | None = None,
     ) -> TunnelApplication:
-        normalized_user, normalized_port, normalized_note = self._validate_request(
-            remote_user, remote_port, ttl_seconds, note
+        (
+            normalized_server_user,
+            normalized_user,
+            normalized_port,
+            normalized_note,
+        ) = self._validate_request(
+            server_user, remote_user, remote_port, ttl_seconds, note
         )
         now = self._clock()
         async with self._allocate_lock:
@@ -413,6 +440,7 @@ class TunnelService:
                 ttl_seconds=ttl_seconds,
                 remote_user=normalized_user,
                 remote_port=normalized_port,
+                server_user=normalized_server_user,
                 remote_password=self._password_factory(),
                 note=normalized_note,
                 source=source,
@@ -423,11 +451,12 @@ class TunnelService:
             self._records[record.id] = record
             self._port_to_id[selected] = record.id
             logger.info(
-                "隧道已分配：id=%s port=%s ttl=%ss remote_user=%s remote_port=%s "
-                "listen_mode=%s bind=%s source=%s",
+                "隧道已分配：id=%s port=%s ttl=%ss server_user=%s "
+                "remote_user=%s remote_port=%s listen_mode=%s bind=%s source=%s",
                 record.id,
                 record.port,
                 record.ttl_seconds,
+                record.server_user,
                 record.remote_user,
                 record.remote_port,
                 record.policy.mode.value,
@@ -445,6 +474,7 @@ class TunnelService:
         return {
             "id": record.id,
             "port": record.port,
+            "server_user": record.server_user,
             "remote_user": record.remote_user,
             "remote_port": record.remote_port,
             "remote_password": record.remote_password,

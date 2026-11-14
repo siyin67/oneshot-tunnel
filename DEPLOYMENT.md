@@ -34,7 +34,7 @@
 - OpenSSH Server 7.6 或更新版本（`AllowTcpForwarding remote` 需要 7.6+）。
 - Docker Engine 与 Docker Compose v2。必须使用 Linux 容器；Docker Desktop 的 host network 行为与 Linux 不同，不作为生产部署方式。
 - 宿主机安装 `iproute2`（提供 `ip` 和 `ss`）、`sudo`、`tzdata`。镜像内已包含这些包。
-- 一个专用的 tunnel 用户（示例为 `tunnel`），并为它设置独立的登录密码。
+- 至少一个专用服务器账号（示例为 `tunnel`），并为它设置独立的登录密码。申请页可以为单条隧道覆盖为其他已存在账号；每个可用账号都要按 3.2 和 3.3 配置。
 - 远程电脑为 Windows 10/11 或 Windows Server 2016+，安装 OpenSSH Server 并允许 SSH 密码认证。申请页会生成在远程 Windows 上创建/更新本地专用用户的 PowerShell 命令和随机密码；该用户默认 `sshport`，只加入 Users 组，不加入 Administrators。
 - 一个专用端口范围（示例为 30000-30099），不要与网站端口、宿主机其他服务重叠。
 
@@ -89,24 +89,27 @@ sudo passwd tunnel
 - 不要给该用户 sudo 权限，也不要把它加入 docker 组。
 - 不需要为这个账号安装公钥；本方案只使用密码认证。
 
-`sshd` 侧的密码认证、禁止 shell 和监听限制统一放在 3.3 生成的 `Match User tunnel` 块中。不要在本节手工追加另一份 `Match`，否则两个 `Match` 块和 `Include` 的顺序容易互相干扰。
+`sshd` 侧的密码认证、禁止 shell 和监听限制统一放在 3.3 生成的 `Match User` 块中。不要在本节手工追加另一份 `Match`，否则两个 `Match` 块和 `Include` 的顺序容易互相干扰。
 
 需要理解的限制：
 
 - 只允许密码认证，不接受公钥；`PasswordAuthentication yes` 与 `AuthenticationMethods password` 配合。
 - `MaxSessions 0` 禁止 shell、登录和 subsystem 会话，但仍允许端口转发；`ForceCommand` 和 `PermitTTY no` 是额外防线。
 - 真正限制可监听地址和端口的是下一节的 `PermitListen`。
-- 如果 `tunnel.user` 不是 `tunnel`，3.3 的 `Match User` 必须同步改成实际用户名。
+- `tunnel.user` 是申请页的默认服务器账号；申请时可以为该条隧道填写其他已存在的服务器账号。每个可用账号都必须事先创建、设置独立密码，并列入 3.3 的 `Match User`。
 
 ### 3.3 配置密码认证与 PermitListen
 
-服务器 `tunnel` 账号使用密码认证，因此不能再用 `authorized_keys` 里的 `permitlisten` 限制监听地址：那个选项只在公钥认证时读取。密码认证下，监听地址限制必须写在 `sshd_config` 的 `PermitListen` 中。
+服务器隧道账号使用密码认证，因此不能再用 `authorized_keys` 里的 `permitlisten` 限制监听地址：那个选项只在公钥认证时读取。密码认证下，监听地址限制必须写在 `sshd_config` 的 `PermitListen` 中。
 
 `PermitListen` 只接受单个端口（`port`）或 `主机:端口`（`host:port`），不接受 `30000-30099` 这样的范围；多个权限用**空白**分隔，不能用逗号。下面根据当前策略生成一个独立的配置文件，并把它 Include 到主配置末尾。不要把含 `Match` 的文件放进 Debian/Ubuntu 的 `sshd_config.d/`，因为该目录通常在 `sshd_config` 开头被 Include，`Match` 块可能把后面的全局配置也吞进去。
 
-脚本假设配置中的 `tunnel.user` 为 `tunnel`、端口范围为 `30000-30099`。如果改过这两项，必须同步修改脚本中的 `Match User` 和 `seq` 范围；`BIND` 按当前监听策略填写。
+脚本假设默认账号为 `tunnel`、端口范围为 `30000-30099`。如果申请页需要允许其他服务器账号，请把这些账号用逗号写入 `MATCH_USERS`，例如 `tunnel,ops`；每个账号都要设置密码。改过端口范围时同步修改 `seq`；`BIND` 按当前监听策略填写。网站不会校验账号是否存在，也不保存这些账号的密码。
 
 ```bash
+# 允许的服务器账号，逗号分隔；默认只允许 tunnel。
+MATCH_USERS="tunnel"
+
 # 仅回环策略；all 模式改为 0.0.0.0；specific 模式改为实际网卡 IP。
 BIND=127.0.0.1
 
@@ -122,7 +125,7 @@ for port in $(seq 30000 30099); do
 done
 
 sudo tee /etc/ssh/sshport-tunnel.conf >/dev/null <<EOF
-Match User tunnel
+Match User $MATCH_USERS
     GatewayPorts clientspecified
     PasswordAuthentication yes
     PubkeyAuthentication no
@@ -170,7 +173,7 @@ sudo sshd -T -C user=tunnel,host=localhost,addr=127.0.0.1 \
 
 ```bash
 # 在远程 Windows 的 PowerShell 或 cmd 中执行网站生成的命令（下面只是示例）；
-# 终端会提示输入服务器 tunnel 用户的密码。
+# 终端会提示输入申请时填写的服务器账号密码。
 ssh -N -T -p 22 \
   -o ExitOnForwardFailure=yes \
   -o PreferredAuthentications=password \
@@ -186,6 +189,7 @@ ss -ltnp 'sport = :30000'
 验证不能登录 shell：
 
 ```bash
+# 把 tunnel 换成申请时填写的服务器账号
 ssh -tt tunnel@tunnel.example.com
 # 应被拒绝或立即退出，不能获得交互式 shell
 ```
@@ -226,7 +230,7 @@ Restart-Service sshd
 - `all` 模式生成 Agent 提示词时绝不能使用 `0.0.0.0`；服务会使用 `tunnel.public_host`，例如公网 DNS 名称或可路由 IP。
 - `specific` 只接受单个 IP，不接受 CIDR。管理页保存时，后端执行 `ip -o addr show` 校验该 IP 在当前宿主机网卡上；不存在则拒绝保存。
 - 管理页修改策略只影响之后新申请的隧道；已建立隧道保留申请时的绑定地址。
-- 修改策略后还要同步更新 `/etc/ssh/sshport-tunnel.conf` 中 `Match User tunnel` 的 `PermitListen` 列表，并 reload sshd，原因见 3.3。
+- 修改策略或允许的服务器账号后还要同步更新 `/etc/ssh/sshport-tunnel.conf` 中 `Match User` 的 `PermitListen` 列表，并 reload sshd，原因见 3.3。
 
 虚拟网卡示例：
 
@@ -387,7 +391,7 @@ docker compose down
 
 | 字段 | 类型 | 说明 | 约束 |
 | --- | --- | --- | --- |
-| `user` | 字符串 | 远程 Windows 连接服务器使用的受限 SSH 用户 | 合法用户名；该账号需在宿主机设置密码，密码不写入本配置 |
+| `user` | 字符串 | 申请页默认的服务器 SSH 用户；可被单次申请覆盖 | 合法用户名；每个可用账号需在宿主机设置密码并列入 `Match User`，密码不写入本配置 |
 | `server_host` | 字符串 | 隧道服务器地址，写入 `ssh -R` 命令 | 主机名或 IP，不带端口/协议 |
 | `server_port` | 整数 | 隧道服务器 SSH 端口 | 1-65535，且不在隧道端口范围内 |
 | `port_start` / `port_end` | 整数 | 宿主机可分配的闭区间端口范围 | 1-65535，start <= end |
@@ -402,7 +406,7 @@ docker compose down
 | `keepalive_interval_seconds` | 整数 | `ServerAliveInterval` | 1-3600 |
 | `keepalive_count_max` | 整数 | `ServerAliveCountMax` | 正整数 |
 
-`tunnel.user` 只是服务器侧的 SSH 账号名。该账号的密码由宿主机管理员用 `passwd` 设置，不在配置文件中，也不由网站生成或保存。远程 Windows 上被操作的账号则是另一回事：它由申请页生成，用户名默认 `sshport`，密码随机生成并显示在结果页。
+`tunnel.user` 只是申请页的默认服务器账号名。申请者可以在表单中为单条隧道填写其他服务器账号；网站只校验用户名格式，不校验账号是否存在，也不保存密码。每个允许使用的账号都必须由宿主机管理员用 `passwd` 设置密码，并出现在 3.3 的 `Match User` 列表中。远程 Windows 上被操作的账号则是另一回事：它由申请页生成，用户名默认 `sshport`，密码随机生成并显示在结果页。
 
 `listen_mode` 是首次启动的初始值。管理页保存过策略后，`data/policy.json` 优先；删除该文件可恢复配置文件值。
 
@@ -449,10 +453,10 @@ docker compose down
 ### 8.1 申请隧道
 
 1. 登录后打开申请页。
-2. 填写远程 Windows 的 SSH 用户名（默认 `sshport`，必须是专用标准用户，最多 20 个字符）、远程 SSH 端口（默认 22）、有效期、备注。填写 `root` 或 `Administrator` 会被拒绝。
+2. 填写连接服务器的 SSH 用户名（默认使用配置中的 `tunnel.user`）、远程 Windows 的 SSH 用户名（默认 `sshport`，必须是专用标准用户，最多 20 个字符）、远程 SSH 端口（默认 22）、有效期、备注。服务器账号必须是已存在且已设置密码的账号；远程用户名填写 `root` 或 `Administrator` 会被拒绝。
 3. 提交后，结果页第一步给出在远程 Windows 上执行的 PowerShell 命令和随机密码。在远程 Windows 上以管理员身份打开 PowerShell，粘贴执行一次。命令会创建或更新本地用户、设置不过期密码、启用账户，并加入 Users 组；若同名用户已存在会重置其密码，因此请确认用户名是专用账号。命令包含密码，不要在多人可见的终端或日志中保留。
 4. 确认远程 Windows 的 OpenSSH Server 允许密码认证。若远程 sshd 禁止密码登录，本方案无法建立 Agent 连接；不要为此修改网站或重置远程 SSH 配置，先与远程电脑拥有者确认。
-5. 结果页第二步复制 `ssh -R` 命令，在**远程 Windows** 的 PowerShell 或 cmd 中执行；终端提示的是服务器 `tunnel` 用户的密码，不是上一步生成的远程密码。
+5. 结果页第二步复制 `ssh -R` 命令，在**远程 Windows** 的 PowerShell 或 cmd 中执行；终端提示的是申请时填写的服务器账号密码，不是上一步生成的远程密码。
 6. 把第三步的 Agent 提示词复制给本地 Agent。Agent 使用远程 Windows 用户名和随机密码登录远程电脑，需要时通过 PowerShell 执行命令。
 7. 观察状态从“已分配，待连接”变为“已建立”。
 
@@ -483,9 +487,9 @@ docker compose down
 检查顺序：
 
 1. 远程 Windows 上的 `ssh` 进程是否仍在运行，命令是否包含 `ExitOnForwardFailure=yes`。
-2. 宿主机 `sshd -T` 是否显示 `gatewayports clientspecified` 和 `allowtcpforwarding remote`；如果全局配置了 `AllowUsers`/`AllowGroups`，确认 `tunnel` 被允许。
-3. `/etc/ssh/sshport-tunnel.conf` 的 `Match User tunnel` 是否包含当前策略地址和端口对应的 `PermitListen`；改过策略但没重新生成或没 reload 是常见原因。
-4. 服务器 `tunnel` 用户是否已设置密码，`PasswordAuthentication` 是否在 Match 中启用；密码错误会直接认证失败。
+2. 宿主机 `sshd -T` 是否显示 `gatewayports clientspecified` 和 `allowtcpforwarding remote`；如果全局配置了 `AllowUsers`/`AllowGroups`，确认申请时填写的服务器账号被允许。
+3. `/etc/ssh/sshport-tunnel.conf` 的 `Match User` 是否包含申请时填写的服务器账号，以及当前策略地址和端口对应的 `PermitListen`；改过策略或账号但没重新生成、没 reload 是常见原因。
+4. 申请时填写的服务器账号是否已设置密码，`PasswordAuthentication` 是否在 Match 中启用；密码错误会直接认证失败。
 5. 远程 Windows 的 OpenSSH Server 是否允许密码认证，本地账号是否启用或锁定；在远程 Windows 的 PowerShell 中检查 `Get-Content C:\ProgramData\ssh\sshd_config | Select-String PasswordAuthentication`、`Get-Service sshd`、`Get-LocalUser -Name <远程用户>`，必要时查看 `OpenSSH/Operational` 事件日志。
 6. 端口是否在 `tunnel.port_start..port_end` 内。
 7. 宿主机防火墙/云安全组是否放行（all/specific 模式）。
@@ -540,8 +544,8 @@ docker compose exec sshport python /app/docker/healthcheck.py
 - [ ] `config.toml` 权限为 0600，属主为容器用户；配置目录不对普通用户开放。
 - [ ] 网站前有 HTTPS 反向代理，`cookie_secure = true`。
 - [ ] 默认使用 `loopback` 策略；只有明确需要时才使用 `all`，并配置防火墙。
-- [ ] `tunnel` 用户只使用密码认证、不能 shell、只能远程转发；密码独立且足够强。
-- [ ] `/etc/ssh/sshport-tunnel.conf` 的 `Match User tunnel` 使用 `MaxSessions 0`、`PermitTTY no`、`ForceCommand /bin/false`，并按策略生成 `PermitListen`；策略变更后重新生成并 reload。
+- [ ] 所有允许申请使用的服务器账号都只使用密码认证、不能 shell、只能远程转发；密码独立且足够强。
+- [ ] `/etc/ssh/sshport-tunnel.conf` 的 `Match User` 使用 `MaxSessions 0`、`PermitTTY no`、`ForceCommand /bin/false`，并按策略生成 `PermitListen`；策略或账号变更后重新生成并 reload。
 - [ ] 远程 Windows 使用申请页创建的本地标准用户（不是 Administrator，且不在 Administrators 组）；随机密码不写入日志或持久化文件。
 - [ ] 服务器 `tunnel` 密码未写入 `config.toml`、未提交 Git、未与网站访问密钥复用。
 - [ ] 端口范围专用，启动孤儿清理不会命中其他服务。
@@ -582,9 +586,9 @@ docker compose down
 | --- | --- |
 | 未登录拦截 | 清除 cookie 后访问 `/apply`、`/admin`，应 303 到 `/login`；API 返回 401 |
 | 密钥配置生效 | 修改 `access.keys` 并 `docker compose restart`，旧密钥失效、新密钥可登录 |
-| 申请返回命令 | 登录后申请，页面显示端口、`ssh -R` 命令、远程用户创建命令和 Agent 提示词 |
+| 申请返回命令 | 登录后申请，页面显示端口、`ssh -R` 命令、远程用户创建命令和 Agent 提示词；自定义服务器用户名同时生效 |
 | 远程用户创建 | 在远程 Windows 的管理员 PowerShell 执行结果页第一步命令，`Get-LocalUser -Name sshport` 显示 Enabled，`Get-LocalGroupMember -Group Users` 包含该用户，密码为页面显示值 |
-| 密码认证生效 | 服务器 `ssh -R` 终端提示输入 `tunnel` 密码；Agent 连接远程 Windows 时使用生成的远程密码 |
+| 密码认证生效 | 服务器 `ssh -R` 终端提示输入申请时填写的服务器账号密码；Agent 连接远程 Windows 时使用生成的远程密码 |
 | 远程执行后监听 | 在另一台机器执行命令，宿主机 `ss -ltnp` 看到对应地址和端口 |
 | 策略隔离 | 切换策略后新申请使用新绑定地址，旧记录保留原地址 |
 | 指定地址校验 | 管理页填不存在的 IP，返回 400 和“不在宿主机任何网卡上” |

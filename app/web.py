@@ -322,6 +322,7 @@ def create_app(
         values = values or {
             "remote_user": DEFAULT_REMOTE_USER,
             "remote_port": "22",
+            "server_user": config.tunnel.user,
             "ttl_seconds": str(config.tunnel.default_ttl_seconds),
             "note": "",
         }
@@ -345,7 +346,7 @@ def create_app(
                 ],
                 "default_remote_port": 22,
                 "default_remote_user": DEFAULT_REMOTE_USER,
-                "config_tunnel_server_user": config.tunnel.user,
+                "default_server_user": config.tunnel.user,
                 "tunnel_server_port": config.tunnel.server_port,
                 "tunnel_server_host": config.tunnel.server_host,
             }
@@ -494,9 +495,15 @@ def create_app(
         require_csrf(session, str(form.get("csrf_token") or ""))
         ip = source_ip(request)
         decision = apply_limiter.check(ip)
+        server_user_raw = form.get("server_user")
         values = {
             "remote_user": str(form.get("remote_user") or ""),
             "remote_port": str(form.get("remote_port") or ""),
+            "server_user": str(
+                config.tunnel.user
+                if server_user_raw is None
+                else server_user_raw
+            ),
             "ttl_seconds": str(form.get("ttl_seconds") or ""),
             "note": str(form.get("note") or ""),
         }
@@ -540,6 +547,7 @@ def create_app(
             application = await service.create_tunnel(
                 remote_user=values["remote_user"],
                 remote_port=remote_port,
+                server_user=values["server_user"],
                 ttl_seconds=ttl_seconds,
                 note=values["note"],
                 source=ip,
@@ -691,6 +699,10 @@ def create_app(
         if not isinstance(remote_user, str):
             fields["remote_user"] = "远程 SSH 用户名必须是字符串"
             remote_user = ""
+        server_user = body.get("server_user", config.tunnel.user)
+        if not isinstance(server_user, str):
+            fields["server_user"] = "连接服务器的 SSH 用户名必须是字符串"
+            server_user = ""
         remote_port_raw = body.get("remote_port", 22)
         remote_port = 22
         if remote_port_raw is None or remote_port_raw == "":
@@ -725,6 +737,7 @@ def create_app(
         application = await service.create_tunnel(
             remote_user=remote_user,
             remote_port=remote_port,
+            server_user=server_user,
             ttl_seconds=ttl_seconds,
             note=note,
             source=source_ip(request),
